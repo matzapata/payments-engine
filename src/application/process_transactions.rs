@@ -24,3 +24,23 @@ pub fn run<R: Read, W: Write>(input: R, output: W) -> Result<(), AppError> {
     CsvAccountWriter::new(output).write_accounts(ledger.accounts().copied())?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_processes_in_memory_csv() {
+        let input = b"type,client,tx,amount\n\
+                      deposit,1,1,10.0000\n\
+                      withdrawal,1,2,3.5000\n\
+                      dispute,2,10,\n";
+        let mut output = Vec::new();
+
+        run(input.as_slice(), &mut output).expect("run succeeds");
+
+        let expected = "client,available,held,total,locked\n\
+                        1,6.5000,0.0000,6.5000,false\n";
+        assert_eq!(std::str::from_utf8(&output).unwrap(), expected);
+    }
+}
