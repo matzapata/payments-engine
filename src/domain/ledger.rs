@@ -196,315 +196,336 @@ mod tests {
     use crate::domain::Amount;
     use crate::domain::transaction::TransactionKind::*;
 
+    struct AccountExpect {
+        client: u16,
+        available: Amount,
+        held: Amount,
+        locked: bool,
+    }
+
+    struct LedgerCase {
+        name: &'static str,
+        transactions: Vec<Transaction>,
+        expected: Vec<AccountExpect>,
+    }
+
+    struct NoOpCase {
+        name: &'static str,
+        setup: Vec<Transaction>,
+        extra: Vec<Transaction>,
+        clients: Vec<u16>,
+    }
+
     fn tx(kind: TransactionKind, client: u16, tx: u32, amount: Option<Amount>) -> Transaction {
         Transaction { kind, client, tx, amount }
     }
 
-    fn account(ledger: &Ledger, client: u16) -> Account {
-        *ledger.accounts().find(|account| account.client == client).expect("account exists")
+    fn assert_invariant(account: &Account, context: &str) {
+        assert_eq!(
+            account.available + account.held,
+            account.total(),
+            "{context}: invariant violated for client {}",
+            account.client
+        );
+        assert!(account.held >= 0, "{context}: negative held for client {}", account.client);
     }
 
-    fn snapshot(ledger: &Ledger, client: u16) -> (Amount, Amount, bool) {
-        let account = account(ledger, client);
-        (account.available, account.held, account.locked)
+    fn apply_all_checked(transactions: &[Transaction], context: &str) -> Ledger {
+        let mut ledger = Ledger::new();
+        for transaction in transactions {
+            ledger.apply(transaction);
+            for account in ledger.accounts() {
+                assert_invariant(account, context);
+            }
+        }
+        ledger
+    }
+
+    fn assert_accounts(ledger: &Ledger, expected: &[AccountExpect], case_name: &str) {
+        for expect in expected {
+            let account = ledger
+                .accounts()
+                .find(|account| account.client == expect.client)
+                .unwrap_or_else(|| panic!("{case_name}: missing client {}", expect.client));
+            assert_eq!(account.available, expect.available, "{case_name}: available");
+            assert_eq!(account.held, expect.held, "{case_name}: held");
+            assert_eq!(account.locked, expect.locked, "{case_name}: locked");
+            assert_eq!(account.total(), expect.available + expect.held, "{case_name}: total");
+        }
+    }
+
+    fn run_ledger_cases(cases: &[LedgerCase]) {
+        for case in cases {
+            let ledger = apply_all_checked(&case.transactions, case.name);
+            assert_accounts(&ledger, &case.expected, case.name);
+        }
+    }
+
+    fn run_no_op_cases(cases: &[NoOpCase]) {
+        for case in cases {
+            let before = apply_all_checked(&case.setup, case.name);
+            let mut combined = case.setup.clone();
+            combined.extend_from_slice(&case.extra);
+            let after = apply_all_checked(&combined, case.name);
+            for &client in &case.clients {
+                let before_account = before
+                    .accounts()
+                    .find(|account| account.client == client)
+                    .expect("before account exists");
+                let after_account = after
+                    .accounts()
+                    .find(|account| account.client == client)
+                    .expect("after account exists");
+                assert_eq!(
+                    (before_account.available, before_account.held, before_account.locked),
+                    (after_account.available, after_account.held, after_account.locked),
+                    "{}",
+                    case.name
+                );
+            }
+        }
     }
 
     #[test]
-    fn deposit_increases_available_and_total() {
-        let ledger = Ledger::from_transactions(&[tx(Deposit, 1, 1, Some(10_0000))]);
-        let account = account(&ledger, 1);
-        assert_eq!(account.available, 10_0000);
-        assert_eq!(account.held, 0);
-        assert_eq!(account.total(), 10_0000);
-        assert!(!account.locked);
-    }
-
-    #[test]
-    fn withdrawal_with_sufficient_funds_decreases_available_and_total() {
-        let ledger = Ledger::from_transactions(&[
-            tx(Deposit, 1, 1, Some(10_0000)),
-            tx(Withdrawal, 1, 2, Some(4_0000)),
+    fn deposits_and_withdrawals_cases() {
+        run_ledger_cases(&[
+            LedgerCase {
+                name: "deposit increases available and total",
+                transactions: vec![tx(Deposit, 1, 1, Some(10_0000))],
+                expected: vec![AccountExpect {
+                    client: 1,
+                    available: 10_0000,
+                    held: 0,
+                    locked: false,
+                }],
+            },
+            LedgerCase {
+                name: "withdrawal with sufficient funds decreases available and total",
+                transactions: vec![
+                    tx(Deposit, 1, 1, Some(10_0000)),
+                    tx(Withdrawal, 1, 2, Some(4_0000)),
+                ],
+                expected: vec![AccountExpect {
+                    client: 1,
+                    available: 6_0000,
+                    held: 0,
+                    locked: false,
+                }],
+            },
+            LedgerCase {
+                name: "multiple clients have independent balances",
+                transactions: vec![
+                    tx(Deposit, 1, 1, Some(10_0000)),
+                    tx(Deposit, 2, 2, Some(20_0000)),
+                    tx(Withdrawal, 1, 3, Some(3_0000)),
+                ],
+                expected: vec![
+                    AccountExpect { client: 1, available: 7_0000, held: 0, locked: false },
+                    AccountExpect { client: 2, available: 20_0000, held: 0, locked: false },
+                ],
+            },
+            LedgerCase {
+                name: "client account is auto-created on first transaction",
+                transactions: vec![tx(Withdrawal, 42, 1, Some(1_0000))],
+                expected: vec![AccountExpect { client: 42, available: 0, held: 0, locked: false }],
+            },
         ]);
-        let account = account(&ledger, 1);
-        assert_eq!(account.available, 6_0000);
-        assert_eq!(account.total(), 6_0000);
+
+        run_no_op_cases(&[NoOpCase {
+            name: "withdrawal with insufficient funds is no-op",
+            setup: vec![tx(Deposit, 1, 1, Some(5_0000))],
+            extra: vec![tx(Withdrawal, 1, 2, Some(6_0000))],
+            clients: vec![1],
+        }]);
     }
 
     #[test]
-    fn withdrawal_with_insufficient_funds_is_no_op() {
-        let before = Ledger::from_transactions(&[tx(Deposit, 1, 1, Some(5_0000))]);
-        let before_snapshot = snapshot(&before, 1);
+    fn dispute_lifecycle_cases() {
+        run_ledger_cases(&[
+            LedgerCase {
+                name: "dispute moves funds from available to held",
+                transactions: vec![tx(Deposit, 1, 1, Some(10_0000)), tx(Dispute, 1, 1, None)],
+                expected: vec![AccountExpect {
+                    client: 1,
+                    available: 0,
+                    held: 10_0000,
+                    locked: false,
+                }],
+            },
+            LedgerCase {
+                name: "deposit dispute resolve restores original available",
+                transactions: vec![
+                    tx(Deposit, 1, 1, Some(10_0000)),
+                    tx(Dispute, 1, 1, None),
+                    tx(Resolve, 1, 1, None),
+                ],
+                expected: vec![AccountExpect {
+                    client: 1,
+                    available: 10_0000,
+                    held: 0,
+                    locked: false,
+                }],
+            },
+            LedgerCase {
+                name: "deposit dispute chargeback removes funds and locks",
+                transactions: vec![
+                    tx(Deposit, 1, 1, Some(10_0000)),
+                    tx(Dispute, 1, 1, None),
+                    tx(Chargeback, 1, 1, None),
+                ],
+                expected: vec![AccountExpect { client: 1, available: 0, held: 0, locked: true }],
+            },
+            LedgerCase {
+                name: "dispute after withdrawing proceeds allows negative available",
+                transactions: vec![
+                    tx(Deposit, 1, 1, Some(10_0000)),
+                    tx(Withdrawal, 1, 2, Some(10_0000)),
+                    tx(Dispute, 1, 1, None),
+                ],
+                expected: vec![AccountExpect {
+                    client: 1,
+                    available: -10_0000,
+                    held: 10_0000,
+                    locked: false,
+                }],
+            },
+        ]);
+    }
 
-        let ledger = Ledger::from_transactions(&[
-            tx(Deposit, 1, 1, Some(5_0000)),
-            tx(Withdrawal, 1, 2, Some(6_0000)),
+    #[test]
+    fn invalid_edge_cases() {
+        run_no_op_cases(&[
+            NoOpCase {
+                name: "dispute on unknown tx is ignored",
+                setup: vec![tx(Deposit, 1, 1, Some(10_0000))],
+                extra: vec![tx(Dispute, 1, 99, None)],
+                clients: vec![1],
+            },
+            NoOpCase {
+                name: "dispute on withdrawal tx is ignored",
+                setup: vec![tx(Deposit, 1, 1, Some(10_0000)), tx(Withdrawal, 1, 2, Some(3_0000))],
+                extra: vec![tx(Dispute, 1, 2, None)],
+                clients: vec![1],
+            },
+            NoOpCase {
+                name: "resolve on non-disputed tx is ignored",
+                setup: vec![tx(Deposit, 1, 1, Some(10_0000))],
+                extra: vec![tx(Resolve, 1, 1, None)],
+                clients: vec![1],
+            },
+            NoOpCase {
+                name: "chargeback on non-disputed tx is ignored",
+                setup: vec![tx(Deposit, 1, 1, Some(10_0000))],
+                extra: vec![tx(Chargeback, 1, 1, None)],
+                clients: vec![1],
+            },
+            NoOpCase {
+                name: "second dispute on same tx is ignored",
+                setup: vec![tx(Deposit, 1, 1, Some(10_0000)), tx(Dispute, 1, 1, None)],
+                extra: vec![tx(Dispute, 1, 1, None)],
+                clients: vec![1],
+            },
+            NoOpCase {
+                name: "dispute with mismatched client is ignored",
+                setup: vec![tx(Deposit, 1, 1, Some(10_0000))],
+                extra: vec![tx(Dispute, 2, 1, None)],
+                clients: vec![1],
+            },
+            NoOpCase {
+                name: "resolve with mismatched client is ignored",
+                setup: vec![tx(Deposit, 1, 1, Some(10_0000)), tx(Dispute, 1, 1, None)],
+                extra: vec![tx(Resolve, 2, 1, None)],
+                clients: vec![1],
+            },
+            NoOpCase {
+                name: "chargeback with mismatched client is ignored",
+                setup: vec![tx(Deposit, 1, 1, Some(10_0000)), tx(Dispute, 1, 1, None)],
+                extra: vec![tx(Chargeback, 2, 1, None)],
+                clients: vec![1],
+            },
+            NoOpCase {
+                name: "resolve on already resolved tx is ignored",
+                setup: vec![
+                    tx(Deposit, 1, 1, Some(10_0000)),
+                    tx(Dispute, 1, 1, None),
+                    tx(Resolve, 1, 1, None),
+                ],
+                extra: vec![tx(Resolve, 1, 1, None)],
+                clients: vec![1],
+            },
+            NoOpCase {
+                name: "chargeback on already resolved tx is ignored",
+                setup: vec![
+                    tx(Deposit, 1, 1, Some(10_0000)),
+                    tx(Dispute, 1, 1, None),
+                    tx(Resolve, 1, 1, None),
+                ],
+                extra: vec![tx(Chargeback, 1, 1, None)],
+                clients: vec![1],
+            },
+            NoOpCase {
+                name: "second chargeback on same tx is ignored",
+                setup: vec![
+                    tx(Deposit, 1, 1, Some(10_0000)),
+                    tx(Dispute, 1, 1, None),
+                    tx(Chargeback, 1, 1, None),
+                ],
+                extra: vec![tx(Chargeback, 1, 1, None)],
+                clients: vec![1],
+            },
+            NoOpCase {
+                name: "withdrawal without amount is ignored",
+                setup: vec![tx(Deposit, 1, 1, Some(5_0000))],
+                extra: vec![tx(Withdrawal, 1, 2, None)],
+                clients: vec![1],
+            },
+            NoOpCase {
+                name: "locked account ignores all subsequent transactions",
+                setup: vec![
+                    tx(Deposit, 1, 1, Some(10_0000)),
+                    tx(Dispute, 1, 1, None),
+                    tx(Chargeback, 1, 1, None),
+                ],
+                extra: vec![
+                    tx(Deposit, 1, 2, Some(5_0000)),
+                    tx(Withdrawal, 1, 3, Some(1_0000)),
+                    tx(Dispute, 1, 1, None),
+                    tx(Resolve, 1, 1, None),
+                    tx(Chargeback, 1, 1, None),
+                ],
+                clients: vec![1],
+            },
         ]);
 
-        assert_eq!(snapshot(&ledger, 1), before_snapshot);
+        let ledger =
+            apply_all_checked(&[tx(Deposit, 1, 1, None)], "deposit without amount is ignored");
+        assert!(ledger.accounts().next().is_none(), "deposit without amount is ignored");
     }
 
     #[test]
-    fn client_account_is_auto_created() {
-        let ledger = Ledger::from_transactions(&[tx(Withdrawal, 42, 1, Some(1_0000))]);
-        let account = account(&ledger, 42);
-        assert_eq!(account.available, 0);
-        assert_eq!(account.held, 0);
-    }
-
-    #[test]
-    fn multiple_clients_have_independent_balances() {
-        let ledger = Ledger::from_transactions(&[
+    fn invariant_holds_after_every_apply() {
+        let transactions = vec![
             tx(Deposit, 1, 1, Some(10_0000)),
-            tx(Deposit, 2, 2, Some(20_0000)),
+            tx(Deposit, 2, 2, Some(5_0000)),
             tx(Withdrawal, 1, 3, Some(3_0000)),
-        ]);
-        assert_eq!(account(&ledger, 1).available, 7_0000);
-        assert_eq!(account(&ledger, 2).available, 20_0000);
-    }
-
-    #[test]
-    fn dispute_moves_funds_from_available_to_held() {
-        let ledger =
-            Ledger::from_transactions(&[tx(Deposit, 1, 1, Some(10_0000)), tx(Dispute, 1, 1, None)]);
-        let account = account(&ledger, 1);
-        assert_eq!(account.available, 0);
-        assert_eq!(account.held, 10_0000);
-        assert_eq!(account.total(), 10_0000);
-    }
-
-    #[test]
-    fn dispute_on_unknown_tx_is_ignored() {
-        let before = Ledger::from_transactions(&[tx(Deposit, 1, 1, Some(10_0000))]);
-        let before_snapshot = snapshot(&before, 1);
-
-        let ledger = Ledger::from_transactions(&[
-            tx(Deposit, 1, 1, Some(10_0000)),
-            tx(Dispute, 1, 99, None),
-        ]);
-
-        assert_eq!(snapshot(&ledger, 1), before_snapshot);
-    }
-
-    #[test]
-    fn dispute_on_withdrawal_tx_is_ignored() {
-        let before = Ledger::from_transactions(&[
-            tx(Deposit, 1, 1, Some(10_0000)),
-            tx(Withdrawal, 1, 2, Some(3_0000)),
-        ]);
-        let before_snapshot = snapshot(&before, 1);
-
-        let ledger = Ledger::from_transactions(&[
-            tx(Deposit, 1, 1, Some(10_0000)),
-            tx(Withdrawal, 1, 2, Some(3_0000)),
-            tx(Dispute, 1, 2, None),
-        ]);
-
-        assert_eq!(snapshot(&ledger, 1), before_snapshot);
-    }
-
-    #[test]
-    fn resolve_releases_held_funds_to_available() {
-        let ledger = Ledger::from_transactions(&[
-            tx(Deposit, 1, 1, Some(10_0000)),
             tx(Dispute, 1, 1, None),
             tx(Resolve, 1, 1, None),
-        ]);
-        let account = account(&ledger, 1);
-        assert_eq!(account.available, 10_0000);
-        assert_eq!(account.held, 0);
-        assert_eq!(account.total(), 10_0000);
-    }
+            tx(Deposit, 3, 4, Some(8_0000)),
+            tx(Dispute, 3, 4, None),
+            tx(Chargeback, 3, 4, None),
+            tx(Deposit, 3, 5, Some(1_0000)),
+        ];
 
-    #[test]
-    fn chargeback_removes_held_funds_and_locks_account() {
-        let ledger = Ledger::from_transactions(&[
-            tx(Deposit, 1, 1, Some(10_0000)),
-            tx(Dispute, 1, 1, None),
-            tx(Chargeback, 1, 1, None),
-        ]);
-        let account = account(&ledger, 1);
-        assert_eq!(account.available, 0);
-        assert_eq!(account.held, 0);
-        assert_eq!(account.total(), 0);
-        assert!(account.locked);
-    }
+        let ledger = apply_all_checked(&transactions, "invariant composite stream");
 
-    #[test]
-    fn deposit_dispute_resolve_restores_original_available() {
-        let ledger = Ledger::from_transactions(&[
-            tx(Deposit, 1, 1, Some(10_0000)),
-            tx(Dispute, 1, 1, None),
-            tx(Resolve, 1, 1, None),
-        ]);
-        let account = account(&ledger, 1);
-        assert_eq!(account.available, 10_0000);
-        assert_eq!(account.held, 0);
-    }
-
-    #[test]
-    fn deposit_dispute_chargeback_removes_funds_and_locks() {
-        let ledger = Ledger::from_transactions(&[
-            tx(Deposit, 1, 1, Some(10_0000)),
-            tx(Dispute, 1, 1, None),
-            tx(Chargeback, 1, 1, None),
-        ]);
-        let account = account(&ledger, 1);
-        assert_eq!(account.available, 0);
-        assert_eq!(account.total(), 0);
-        assert!(account.locked);
-    }
-
-    #[test]
-    fn second_dispute_on_same_tx_is_ignored() {
-        let before =
-            Ledger::from_transactions(&[tx(Deposit, 1, 1, Some(10_0000)), tx(Dispute, 1, 1, None)]);
-        let before_snapshot = snapshot(&before, 1);
-
-        let ledger = Ledger::from_transactions(&[
-            tx(Deposit, 1, 1, Some(10_0000)),
-            tx(Dispute, 1, 1, None),
-            tx(Dispute, 1, 1, None),
-        ]);
-
-        assert_eq!(snapshot(&ledger, 1), before_snapshot);
-    }
-
-    #[test]
-    fn resolve_on_non_disputed_tx_is_ignored() {
-        let before = Ledger::from_transactions(&[tx(Deposit, 1, 1, Some(10_0000))]);
-        let before_snapshot = snapshot(&before, 1);
-
-        let ledger =
-            Ledger::from_transactions(&[tx(Deposit, 1, 1, Some(10_0000)), tx(Resolve, 1, 1, None)]);
-
-        assert_eq!(snapshot(&ledger, 1), before_snapshot);
-    }
-
-    #[test]
-    fn chargeback_on_non_disputed_tx_is_ignored() {
-        let before = Ledger::from_transactions(&[tx(Deposit, 1, 1, Some(10_0000))]);
-        let before_snapshot = snapshot(&before, 1);
-
-        let ledger = Ledger::from_transactions(&[
-            tx(Deposit, 1, 1, Some(10_0000)),
-            tx(Chargeback, 1, 1, None),
-        ]);
-
-        assert_eq!(snapshot(&ledger, 1), before_snapshot);
-    }
-
-    #[test]
-    fn dispute_with_mismatched_client_is_ignored() {
-        let before = Ledger::from_transactions(&[tx(Deposit, 1, 1, Some(10_0000))]);
-        let before_snapshot = snapshot(&before, 1);
-
-        let ledger =
-            Ledger::from_transactions(&[tx(Deposit, 1, 1, Some(10_0000)), tx(Dispute, 2, 1, None)]);
-
-        assert_eq!(snapshot(&ledger, 1), before_snapshot);
-    }
-
-    #[test]
-    fn locked_account_ignores_all_subsequent_transactions() {
-        let locked = Ledger::from_transactions(&[
-            tx(Deposit, 1, 1, Some(10_0000)),
-            tx(Dispute, 1, 1, None),
-            tx(Chargeback, 1, 1, None),
-        ]);
-        let locked_snapshot = snapshot(&locked, 1);
-
-        let ledger = Ledger::from_transactions(&[
-            tx(Deposit, 1, 1, Some(10_0000)),
-            tx(Dispute, 1, 1, None),
-            tx(Chargeback, 1, 1, None),
-            tx(Deposit, 1, 2, Some(5_0000)),
-            tx(Withdrawal, 1, 3, Some(1_0000)),
-            tx(Dispute, 1, 1, None),
-            tx(Resolve, 1, 1, None),
-            tx(Chargeback, 1, 1, None),
-        ]);
-
-        assert_eq!(snapshot(&ledger, 1), locked_snapshot);
-    }
-
-    #[test]
-    fn dispute_after_withdrawing_proceeds_allows_negative_available() {
-        let ledger = Ledger::from_transactions(&[
-            tx(Deposit, 1, 1, Some(10_0000)),
-            tx(Withdrawal, 1, 2, Some(10_0000)),
-            tx(Dispute, 1, 1, None),
-        ]);
-        let account = account(&ledger, 1);
-        assert_eq!(account.available, -10_0000);
-        assert_eq!(account.held, 10_0000);
-        assert_eq!(account.total(), 0);
-    }
-
-    #[test]
-    fn deposit_without_amount_is_ignored() {
-        let ledger = Ledger::from_transactions(&[tx(Deposit, 1, 1, None)]);
-        assert!(ledger.accounts().next().is_none());
-    }
-
-    #[test]
-    fn withdrawal_without_amount_is_ignored() {
-        let before = Ledger::from_transactions(&[tx(Deposit, 1, 1, Some(5_0000))]);
-        let before_snapshot = snapshot(&before, 1);
-
-        let ledger = Ledger::from_transactions(&[
-            tx(Deposit, 1, 1, Some(5_0000)),
-            tx(Withdrawal, 1, 2, None),
-        ]);
-
-        assert_eq!(snapshot(&ledger, 1), before_snapshot);
-    }
-
-    #[test]
-    fn resolve_with_mismatched_client_is_ignored() {
-        let before =
-            Ledger::from_transactions(&[tx(Deposit, 1, 1, Some(10_0000)), tx(Dispute, 1, 1, None)]);
-        let before_snapshot = snapshot(&before, 1);
-
-        let ledger = Ledger::from_transactions(&[
-            tx(Deposit, 1, 1, Some(10_0000)),
-            tx(Dispute, 1, 1, None),
-            tx(Resolve, 2, 1, None),
-        ]);
-
-        assert_eq!(snapshot(&ledger, 1), before_snapshot);
-    }
-
-    #[test]
-    fn chargeback_with_mismatched_client_is_ignored() {
-        let before =
-            Ledger::from_transactions(&[tx(Deposit, 1, 1, Some(10_0000)), tx(Dispute, 1, 1, None)]);
-        let before_snapshot = snapshot(&before, 1);
-
-        let ledger = Ledger::from_transactions(&[
-            tx(Deposit, 1, 1, Some(10_0000)),
-            tx(Dispute, 1, 1, None),
-            tx(Chargeback, 2, 1, None),
-        ]);
-
-        assert_eq!(snapshot(&ledger, 1), before_snapshot);
-    }
-
-    #[test]
-    fn resolve_on_already_resolved_tx_is_ignored() {
-        let before = Ledger::from_transactions(&[
-            tx(Deposit, 1, 1, Some(10_0000)),
-            tx(Dispute, 1, 1, None),
-            tx(Resolve, 1, 1, None),
-        ]);
-        let before_snapshot = snapshot(&before, 1);
-
-        let ledger = Ledger::from_transactions(&[
-            tx(Deposit, 1, 1, Some(10_0000)),
-            tx(Dispute, 1, 1, None),
-            tx(Resolve, 1, 1, None),
-            tx(Resolve, 1, 1, None),
-        ]);
-
-        assert_eq!(snapshot(&ledger, 1), before_snapshot);
+        assert_accounts(
+            &ledger,
+            &[
+                AccountExpect { client: 1, available: 7_0000, held: 0, locked: false },
+                AccountExpect { client: 2, available: 5_0000, held: 0, locked: false },
+                AccountExpect { client: 3, available: 0, held: 0, locked: true },
+            ],
+            "invariant composite stream",
+        );
     }
 }
