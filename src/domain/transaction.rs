@@ -1,6 +1,22 @@
 /// Fixed-point money scaled ×10⁴ (four decimal places).
 pub type Amount = i64;
 
+pub fn checked_add(a: Amount, b: Amount) -> Option<Amount> {
+    a.checked_add(b)
+}
+
+pub fn checked_sub(a: Amount, b: Amount) -> Option<Amount> {
+    a.checked_sub(b)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisputeState {
+    None,
+    Disputed,
+    Resolved,
+    ChargedBack,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransactionKind {
     Deposit,

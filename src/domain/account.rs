@@ -16,4 +16,8 @@ impl Account {
     pub fn total(&self) -> Amount {
         self.available + self.held
     }
+
+    pub(crate) fn assert_invariant(&self) {
+        debug_assert!(self.held >= 0);
+    }
 }
