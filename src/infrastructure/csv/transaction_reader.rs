@@ -13,7 +13,7 @@ pub struct CsvTransactionReader<R> {
 
 impl<R: Read> CsvTransactionReader<R> {
     pub fn new(input: R) -> Result<Self, csv::Error> {
-        let mut reader = csv::Reader::from_reader(input);
+        let mut reader = csv::ReaderBuilder::new().trim(csv::Trim::All).from_reader(input);
         let headers = reader.headers()?.clone();
         Ok(Self { reader, headers })
     }
