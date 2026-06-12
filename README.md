@@ -50,12 +50,12 @@ Columns: `client`, `available`, `held`, `total`, `locked`
 | Column      | Description                                                    |
 | ----------- | -------------------------------------------------------------- |
 | `available` | Funds usable for trading, staking, withdrawal (`total - held`) |
-| `held`      | Funds held for dispute (`total - available`)                   |
+| `held`      | Funds held for dispute — running sum of currently-disputed deposit amounts (`total - available` at output time) |
 | `total`     | `available + held`                                             |
 | `locked`    | `true` if a chargeback occurred on the account                 |
 
 
-Output formatting is flexible: spacing, integer vs decimal display, and row order do not matter. Values use **4 decimal places** of precision.
+Output formatting is flexible: spacing, integer vs decimal display, and row order do not matter. Values use **4 decimal places** of precision. `held` is tracked directly during processing; `total - available` is the output-time identity, not the source of truth.
 
 ### Processing Model
 
@@ -64,7 +64,7 @@ Transactions are processed **incrementally** (row-by-row streaming). The full in
 ## Design Principles
 
 - **Correctness over cleverness** — business rules live in the domain layer with explicit, testable transitions
-- **Fixed-precision money** — never use `f64` for balances; use scaled integers or `rust_decimal`
+- **Fixed-precision money** — never use `f64` for balances; use scaled integers (`i64` × 10⁴)
 - **Explicit domain invariants** — enforce `available + held == total` after every state change
 - **Streaming and bounded memory** — process one row at a time; avoid loading the entire CSV
 - **Separation of concerns** — presentation, application, domain, and infrastructure are isolated layers with one-way dependencies
@@ -86,34 +86,46 @@ Transactions are processed **incrementally** (row-by-row streaming). The full in
 | -------------- | ------------------------------------------------------------- | ----------------------------------------------- |
 | **deposit**    | `available` ↑, `total` ↑ by `amount`                          | —                                               |
 | **withdrawal** | `available` ↓, `total` ↓ by `amount`                          | **No-op** if `available < amount`               |
-| **dispute**    | `available` ↓, `held` ↑ by disputed amount; `total` unchanged | **Ignore** if referenced `tx` does not exist    |
+| **dispute**    | `available` ↓, `held` ↑ by disputed amount; `total` unchanged | **Ignore** if referenced `tx` does not exist or is not a deposit |
 | **resolve**    | `held` ↓, `available` ↑ by released amount; `total` unchanged | **Ignore** if `tx` missing or not under dispute |
 | **chargeback** | `held` ↓, `total` ↓ by disputed amount; `locked = true`       | **Ignore** if `tx` missing or not under dispute |
 
 
-For dispute, resolve, and chargeback, the **amount comes from the original transaction** referenced by `tx`.
+For dispute, resolve, and chargeback, the **amount comes from the original deposit** referenced by `tx`. Only deposit rows are stored in the transaction map for later dispute lookup.
 
 ### Dispute Lifecycle
 
 ```
-Deposit/Withdrawal → Dispute → Resolve   (funds released back to available)
-                              → Chargeback (funds removed, account locked)
+Deposit → Dispute → Resolve   (funds released back to available)
+                  → Chargeback (funds removed, account locked)
 ```
 
 - A transaction can only be in one dispute state at a time: `None → Disputed → Resolved | ChargedBack`
 - Repeated dispute/resolve/chargeback on the same `tx` in an invalid state is **ignored**
 - The `client` on a dispute row must match the client on the original transaction; mismatches are **ignored**
-- Only `deposit` and `withdrawal` transactions can be disputed
+- Only `deposit` transactions can be disputed — this matches the fraud scenario in the spec (reverse a fraudulent deposit after withdrawing proceeds), avoids negative `available`, and mirrors real chargeback semantics where the disputed credit is reversed
 
 ### Locked Accounts
 
 - An account is locked when a chargeback occurs
-- Post-lock behavior: further transactions for that client are **ignored** (documented assumption)
+- Post-lock behavior: all further rows for that client are **ignored**, including in-flight `resolve`/`chargeback` for transactions that were already under dispute when the lock occurred (documented assumption)
 
 ### Precision
 
 - All amounts support up to **4 decimal places**
 - Arithmetic uses fixed-point representation to avoid floating-point drift
+
+### Error Handling
+
+| Situation | Behavior |
+| --------- | -------- |
+| CLI usage errors (missing or extra arguments) | Print usage to **stderr**, exit code **2** |
+| I/O errors opening or reading the input file | Message to **stderr**, exit code **1** |
+| Output write errors (broken pipe on stdout) | Exit **0** on `EPIPE`; exit **1** on other write errors |
+| Malformed CSV rows (bad header, unparseable amount, unknown `type`, missing required fields) | Silently skipped; processing continues |
+| Partner errors (unknown `tx`, wrong lifecycle state, client mismatch, locked account) | Silently ignored — see [Assumptions](#assumptions) |
+
+This policy is consistent with a streaming-server deployment: one bad row never tears down a session.
 
 ### Assumptions
 
@@ -122,8 +134,8 @@ Deposit/Withdrawal → Dispute → Resolve   (funds released back to available)
 | -------------------- | ----------------------------------------------------------------------- |
 | Withdrawal failure   | Silent no-op; balances unchanged                                        |
 | Invalid partner rows | Silently ignored (unknown `tx`, wrong lifecycle state, client mismatch) |
-| Locked account       | All subsequent transactions for that client are rejected                |
-| Dispute target       | Only deposit and withdrawal transactions are disputable                 |
+| Locked account       | All subsequent rows for that client are rejected, including `resolve`/`chargeback` |
+| Dispute target       | Only deposit transactions are disputable                                |
 | Double dispute       | Second dispute on same `tx` is ignored                                  |
 
 
@@ -192,7 +204,7 @@ src/
 - `TransactionKind` — `Deposit`, `Withdrawal`, `Dispute`, `Resolve`, `Chargeback`
 - `Account` — `available`, `held`, `locked`; invariant `total == available + held`
 - `DisputeState` — `None | Disputed | Resolved | ChargedBack`
-- `StoredTransaction` — internal ledger record containing `client`, `kind`, `amount`, and `dispute_state`
+- `StoredTransaction` — internal ledger record containing `client`, `amount`, and `dispute_state`; only **deposit** rows are inserted into the tx map — `withdrawal`, `dispute`, `resolve`, and `chargeback` rows are not stored
 - `Ledger` — `HashMap<u16, Account>` + `HashMap<u32, StoredTransaction>`; `apply(&Transaction)`
 
 **Application:**
@@ -209,6 +221,8 @@ fn run<R: Read, W: Write>(input: R, output: W) -> Result<(), AppError>
 - Streaming row-by-row keeps memory bounded regardless of file size
 - `HashMap` lookups by client/tx are O(1); no full replay needed
 - Standard `Read` / `Write` boundaries keep the orchestration testable without introducing extra adapter traits
+- `Ledger` owns no global state — one engine instance per stream/session over generic `Read`/`Write` makes per-connection orchestration trivial
+- Cross-stream horizontal scaling is sharding by `client`: ledgers are disjoint on client ID, so partitioning is mechanical and lock-free
 
 ## Testing Strategy
 
@@ -247,7 +261,7 @@ fn run<R: Read, W: Write>(input: R, output: W) -> Result<(), AppError>
 ### Dispute Lifecycle
 
 - [ ] Dispute on a valid deposit moves funds from `available` to `held`; `total` unchanged
-- [ ] Dispute on a valid withdrawal moves funds from `available` to `held` by the withdrawal amount
+- [ ] Dispute referencing a withdrawal `tx` is ignored
 - [ ] Resolve on a disputed transaction moves funds from `held` back to `available`; `total` unchanged
 - [ ] Chargeback on a disputed transaction decreases `held` and `total`; sets `locked = true`
 - [ ] Full cycle: deposit → dispute → resolve restores original available balance
