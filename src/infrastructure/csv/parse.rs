@@ -1,13 +1,10 @@
-use std::io::{Read, Write};
-
 use csv::StringRecord;
 use serde::Deserialize;
 
-use crate::domain::account::Account;
 use crate::domain::transaction::{Transaction, TransactionKind};
 
 #[derive(Debug, Deserialize)]
-struct TransactionRow {
+pub(super) struct TransactionRow {
     #[serde(rename = "type")]
     kind: String,
     client: u16,
@@ -15,41 +12,10 @@ struct TransactionRow {
     amount: Option<String>,
 }
 
-pub fn read_transactions<R: Read>(input: R) -> Result<Vec<Transaction>, csv::Error> {
-    let mut reader = csv::Reader::from_reader(input);
-    let headers = reader.headers()?.clone();
-
-    Ok(reader
-        .records()
-        .filter_map(|record| parse_transaction_row(&headers, &record.ok()?))
-        .collect())
-}
-
-pub fn write_accounts<W: Write>(
-    mut output: W,
-    accounts: impl IntoIterator<Item = Account>,
-) -> Result<(), csv::Error> {
-    let mut writer = csv::Writer::from_writer(&mut output);
-    writer.write_record(["client", "available", "held", "total", "locked"])?;
-
-    let mut rows: Vec<_> = accounts.into_iter().collect();
-    rows.sort_by_key(|account| account.client);
-
-    for account in rows {
-        writer.write_record([
-            account.client.to_string(),
-            format_amount(account.available),
-            format_amount(account.held),
-            format_amount(account.total()),
-            account.locked.to_string(),
-        ])?;
-    }
-
-    writer.flush()?;
-    Ok(())
-}
-
-fn parse_transaction_row(headers: &StringRecord, record: &StringRecord) -> Option<Transaction> {
+pub(super) fn parse_transaction_row(
+    headers: &StringRecord,
+    record: &StringRecord,
+) -> Option<Transaction> {
     let row: TransactionRow = record.deserialize(Some(headers)).ok()?;
     let kind = parse_kind(&row.kind)?;
     let amount = row.amount.as_deref().and_then(parse_amount);
@@ -99,7 +65,7 @@ fn parse_amount(raw: &str) -> Option<i64> {
     Some(scaled)
 }
 
-fn format_amount(amount: i64) -> String {
+pub(super) fn format_amount(amount: i64) -> String {
     let negative = amount.is_negative();
     let abs = amount.unsigned_abs();
     let whole = abs / 10_000;

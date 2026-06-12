@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use thiserror::Error;
 
 use crate::domain::ledger::Ledger;
-use crate::infrastructure::csv::{read_transactions, write_accounts};
+use crate::infrastructure::csv::{CsvAccountWriter, CsvTransactionReader};
 
 #[derive(Debug, Error)]
 pub enum AppError {
@@ -15,11 +15,12 @@ pub enum AppError {
 
 pub fn run<R: Read, W: Write>(input: R, output: W) -> Result<(), AppError> {
     let mut ledger = Ledger::new();
+    let mut reader = CsvTransactionReader::new(input)?;
 
-    for transaction in read_transactions(input)? {
+    for transaction in reader.transactions() {
         ledger.apply(&transaction);
     }
 
-    write_accounts(output, ledger.accounts().copied())?;
+    CsvAccountWriter::new(output).write_accounts(ledger.accounts().copied())?;
     Ok(())
 }
