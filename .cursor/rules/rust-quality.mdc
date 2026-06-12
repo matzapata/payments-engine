@@ -1,0 +1,42 @@
+---
+description: Rust code quality, money handling, and testing strategy
+globs: "**/*.rs"
+alwaysApply: false
+---
+
+# Rust quality
+
+## Money and precision
+
+```rust
+// ❌ Floating-point balances
+let balance: f64 = 1.1 + 2.2;
+
+// ✅ Scaled integer Amount (×10⁴)
+let amount: Amount = Amount::from_str("1.5000")?;
+account.available = account.available + amount;
+```
+
+- Support up to 4 decimal places in input/output
+- Preserve precision through all arithmetic
+
+## Error handling
+
+- Use `thiserror` for error types in presentation/application/infrastructure
+- Domain `apply` returns silently on partner errors (no panics, no balance change)
+- CLI maps fatal errors (bad path, parse failure on deposit/withdrawal rows) to exit codes
+
+## Testing by layer
+
+| Layer | Focus |
+|-------|-------|
+| Domain | Balance transitions, dispute lifecycle, invariants |
+| Application | `ProcessTransactions` with in-memory `Read` / `Write` |
+| Infrastructure | CSV whitespace, decimal formats, missing amount columns |
+| Integration | `cargo run -- sample.csv` vs golden `expected_accounts.csv` |
+
+## Style
+
+- Prefer small, pure functions in domain; keep `Ledger::apply` readable with early returns for ignore cases
+- Use `#[cfg(test)]` modules colocated with the code under test
+- Fixture files in `tests/` (e.g. `sample_transactions.csv`, `expected_accounts.csv`)

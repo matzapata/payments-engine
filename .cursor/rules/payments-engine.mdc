@@ -1,0 +1,28 @@
+---
+description: Payments engine — goals, design principles, change discipline
+alwaysApply: true
+---
+
+# Payments Engine
+
+CSV-driven CLI: stream transactions from a file, update per-client balances, emit account snapshot CSV to **stdout**.
+
+```bash
+cargo run -- transactions.csv > accounts.csv
+```
+
+## Design principles
+
+- **Correctness over cleverness** — business rules in the domain layer with explicit, testable transitions
+- **Fixed-precision money** — never `f64`; use scaled `i64` (`Amount`, ×10⁴) or `rust_decimal`
+- **Explicit invariants** — enforce `available + held == total` after every state change
+- **Streaming, bounded memory** — one row at a time; never load the full CSV
+- **Layered architecture** — `presentation → application → domain ← infrastructure`; domain has no I/O
+- **Fail silently on partner errors** — invalid dispute/resolve/chargeback rows are ignored, not fatal
+- **Maintainability** — clear module boundaries over micro-optimizations
+
+## How to change code
+
+- **Scope**: Implement only what the task asks. No drive-by refactors or unrelated docs unless requested.
+- **Consistency**: Read nearby files first. Match naming, module layout, and error-handling style.
+- **Verify**: Run `cargo test` after domain/application changes; run integration fixtures when touching CSV or CLI.

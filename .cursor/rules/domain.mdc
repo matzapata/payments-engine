@@ -1,0 +1,41 @@
+---
+description: Domain business rules, dispute lifecycle, and invariants
+globs: src/domain/**/*.rs
+alwaysApply: false
+---
+
+# Domain rules
+
+## Key types
+
+- `Amount` — fixed-point `i64` scaled ×10⁴
+- `TransactionKind` — `Deposit`, `Withdrawal`, `Dispute`, `Resolve`, `Chargeback`
+- `Account` — `available`, `held`, `locked`; invariant `total == available + held`
+- `DisputeState` — `None | Disputed | Resolved | ChargedBack`
+- `StoredTransaction` — `client`, `kind`, `amount`, `dispute_state`
+- `Ledger` — `HashMap<u16, Account>` + `HashMap<u32, StoredTransaction>`; `apply(&Transaction)`
+
+## Transaction semantics
+
+| Type | Effect | On invalid |
+|------|--------|------------|
+| deposit | `available` ↑, `total` ↑ | — |
+| withdrawal | `available` ↓, `total` ↓ | **No-op** if `available < amount` |
+| dispute | `available` ↓, `held` ↑; `total` unchanged | **Ignore** if `tx` missing |
+| resolve | `held` ↓, `available` ↑; `total` unchanged | **Ignore** if not disputed |
+| chargeback | `held` ↓, `total` ↓; `locked = true` | **Ignore** if not disputed |
+
+Dispute/resolve/chargeback amounts come from the **original transaction** referenced by `tx`.
+
+## Dispute lifecycle
+
+`None → Disputed → Resolved | ChargedBack`
+
+- Only `deposit` and `withdrawal` can be disputed
+- `client` on dispute row must match original transaction
+- Repeated invalid dispute/resolve/chargeback on same `tx` → **ignored**
+- Locked account → all subsequent transactions for that client **ignored**
+
+## Testing
+
+Use `Ledger::from_transactions(&[Transaction])` for table-driven tests. Assert invariants after every `apply`.

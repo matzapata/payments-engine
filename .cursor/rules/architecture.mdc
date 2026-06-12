@@ -1,0 +1,48 @@
+---
+description: Layered module structure and dependency rules
+globs: src/**/*.rs
+alwaysApply: false
+---
+
+# Architecture
+
+```
+src/
+  main.rs              # thin entrypoint
+  lib.rs               # module root and public re-exports
+  presentation/        # cli.rs — argv, file open, exit codes
+  application/         # process_transactions.rs — read → apply → write
+  domain/              # transaction, account, ledger — all business rules
+  infrastructure/      # csv.rs — serde row types, parse/write helpers
+```
+
+## Dependency rule
+
+`presentation → application → domain ← infrastructure`
+
+- **Domain** depends on nothing external (no `std::io`, no `serde`, no `csv`)
+- **Application** orchestrates streaming via `Read` / `Write`; signature: `run<R: Read, W: Write>(input: R, output: W) -> Result<(), AppError>`
+- **Infrastructure** owns CSV parsing/serialization; depends only on domain types
+- **Presentation** wires CLI to application and infrastructure
+
+## Data flow
+
+1. CLI parses `argv[1]` as input path
+2. `CsvTransactionReader` streams `Transaction` rows
+3. `ProcessTransactions` applies each row to `Ledger`
+4. On EOF, `Ledger` produces account snapshots
+5. `CsvAccountWriter` serializes to stdout
+
+## Anti-patterns
+
+```rust
+// ❌ Domain importing I/O or serde
+use csv::Reader;
+use serde::Deserialize;
+
+// ❌ Business rules in presentation or infrastructure
+fn parse_and_apply_deposit(row: &str) { /* balance logic here */ }
+
+// ✅ Domain pure logic; infrastructure adapts I/O
+ledger.apply(&transaction);
+```
