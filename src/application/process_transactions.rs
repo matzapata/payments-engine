@@ -1,4 +1,4 @@
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 
 use thiserror::Error;
 
@@ -11,6 +11,18 @@ pub enum AppError {
     Io(#[from] std::io::Error),
     #[error("csv error: {0}")]
     Csv(#[from] csv::Error),
+}
+
+impl AppError {
+    pub fn is_broken_pipe(&self) -> bool {
+        match self {
+            Self::Io(error) => error.kind() == ErrorKind::BrokenPipe,
+            Self::Csv(error) => matches!(
+                error.kind(),
+                csv::ErrorKind::Io(io_error) if io_error.kind() == ErrorKind::BrokenPipe
+            ),
+        }
+    }
 }
 
 pub fn run<R: Read, W: Write>(input: R, output: W) -> Result<(), AppError> {
@@ -28,6 +40,33 @@ pub fn run<R: Read, W: Write>(input: R, output: W) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct BrokenPipeWriter;
+
+    impl Write for BrokenPipeWriter {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(ErrorKind::BrokenPipe, "broken pipe"))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::new(ErrorKind::BrokenPipe, "broken pipe"))
+        }
+    }
+
+    #[test]
+    fn broken_pipe_on_output_write_is_recognized() {
+        let input = b"type,client,tx,amount\ndeposit,1,1,1.0\n";
+        let error = run(input.as_slice(), BrokenPipeWriter).expect_err("broken pipe fails write");
+
+        assert!(error.is_broken_pipe());
+    }
+
+    #[test]
+    fn non_broken_pipe_io_error_is_not_recognized() {
+        let error = AppError::Io(std::io::Error::other("other"));
+
+        assert!(!error.is_broken_pipe());
+    }
 
     #[test]
     fn run_processes_in_memory_csv() {

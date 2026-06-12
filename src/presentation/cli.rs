@@ -30,14 +30,41 @@ pub fn run() -> ExitCode {
     match execute(&args.input) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("{error}");
-            ExitCode::from(1)
+            let exit_code = exit_code_from_error(&error);
+            if exit_code != ExitCode::SUCCESS {
+                eprintln!("{error}");
+            }
+            exit_code
         }
     }
+}
+
+fn exit_code_from_error(error: &AppError) -> ExitCode {
+    if error.is_broken_pipe() { ExitCode::SUCCESS } else { ExitCode::from(1) }
 }
 
 fn execute(input_path: &PathBuf) -> Result<(), AppError> {
     let input = File::open(input_path).map_err(AppError::Io)?;
     let output = io::stdout();
     process_transactions(input, output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Error, ErrorKind};
+
+    #[test]
+    fn broken_pipe_maps_to_success_exit_code() {
+        let error = AppError::Io(Error::new(ErrorKind::BrokenPipe, "broken pipe"));
+
+        assert_eq!(exit_code_from_error(&error), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn other_errors_map_to_failure_exit_code() {
+        let error = AppError::Io(Error::other("other"));
+
+        assert_eq!(exit_code_from_error(&error), ExitCode::from(1));
+    }
 }

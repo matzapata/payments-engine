@@ -252,36 +252,36 @@ fn run<R: Read, W: Write>(input: R, output: W) -> Result<(), AppError>
 
 ### Deposits and Withdrawals
 
-- [ ] Deposit increases `available` and `total` by the deposited amount
-- [ ] Withdrawal with sufficient funds decreases `available` and `total`
-- [ ] Withdrawal with insufficient funds is a no-op (all balances unchanged)
-- [ ] Multiple deposits and withdrawals across clients produce correct final balances
-- [ ] Client account is auto-created on first transaction
+- [x] Deposit increases `available` and `total` by the deposited amount
+- [x] Withdrawal with sufficient funds decreases `available` and `total`
+- [x] Withdrawal with insufficient funds is a no-op (all balances unchanged)
+- [x] Multiple deposits and withdrawals across clients produce correct final balances
+- [x] Client account is auto-created on first transaction
 
 ### Dispute Lifecycle
 
-- [ ] Dispute on a valid deposit moves funds from `available` to `held`; `total` unchanged
-- [ ] Dispute referencing a withdrawal `tx` is ignored
-- [ ] Resolve on a disputed transaction moves funds from `held` back to `available`; `total` unchanged
-- [ ] Chargeback on a disputed transaction decreases `held` and `total`; sets `locked = true`
-- [ ] Full cycle: deposit → dispute → resolve restores original available balance
-- [ ] Full cycle: deposit → dispute → chargeback removes funds and locks account
+- [x] Dispute on a valid deposit moves funds from `available` to `held`; `total` unchanged
+- [x] Dispute referencing a withdrawal `tx` is ignored
+- [x] Resolve on a disputed transaction moves funds from `held` back to `available`; `total` unchanged
+- [x] Chargeback on a disputed transaction decreases `held` and `total`; sets `locked = true`
+- [x] Full cycle: deposit → dispute → resolve restores original available balance
+- [x] Full cycle: deposit → dispute → chargeback removes funds and locks account
 
 ### Invalid / Edge Cases
 
-- [ ] Dispute referencing unknown `tx` is ignored
-- [ ] Resolve on a non-disputed `tx` is ignored
-- [ ] Chargeback on a non-disputed `tx` is ignored
-- [ ] Second dispute on an already-disputed `tx` is ignored
-- [ ] Dispute with mismatched `client` vs original transaction is ignored
-- [ ] Transactions on a locked account are ignored
+- [x] Dispute referencing unknown `tx` is ignored
+- [x] Resolve on a non-disputed `tx` is ignored
+- [x] Chargeback on a non-disputed `tx` is ignored
+- [x] Second dispute on an already-disputed `tx` is ignored
+- [x] Dispute with mismatched `client` vs original transaction is ignored
+- [x] Transactions on a locked account are ignored
 
 ### Invariants and Formatting
 
-- [ ] `available + held == total` after every processed transaction
-- [ ] CSV input with extra whitespace and varying decimal precision (`1.0` vs `1.0000`) parses correctly
-- [ ] Output values maintain 4-decimal precision
-- [ ] Integration test: sample input file produces expected golden output
+- [x] `available + held == total` after every processed transaction
+- [x] CSV input with extra whitespace and varying decimal precision (`1.0` vs `1.0000`) parses correctly
+- [x] Output values maintain 4-decimal precision
+- [x] Integration test: sample input file produces expected golden output
 
 ## Dependencies
 
