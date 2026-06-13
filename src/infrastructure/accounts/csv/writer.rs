@@ -1,4 +1,5 @@
 use crate::domain::account::Account;
+use crate::infrastructure::accounts::AccountSink;
 use std::io::Write;
 
 pub struct CsvAccountWriter<W> {
@@ -9,11 +10,15 @@ impl<W: Write> CsvAccountWriter<W> {
     pub fn new(output: W) -> Self {
         Self { output }
     }
+}
 
-    pub fn write_accounts(
+impl<W: Write> AccountSink for CsvAccountWriter<W> {
+    type Error = csv::Error;
+
+    fn write_accounts(
         &mut self,
         accounts: impl IntoIterator<Item = Account>,
-    ) -> Result<(), csv::Error> {
+    ) -> Result<(), Self::Error> {
         let mut writer = csv::Writer::from_writer(&mut self.output);
         writer.write_record(["client", "available", "held", "total", "locked"])?;
 
@@ -42,7 +47,6 @@ impl<W: Write> CsvAccountWriter<W> {
 mod tests {
     use super::*;
     use crate::domain::Amount;
-    use crate::domain::account::Account;
 
     #[test]
     fn writes_four_decimal_amounts() {

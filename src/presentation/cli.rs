@@ -1,11 +1,12 @@
+use crate::application::AppError;
+use crate::application::process_transactions::run as process_transactions;
+use crate::infrastructure::accounts::CsvAccountWriter;
+use crate::infrastructure::transactions::CsvTransactionReader;
+use clap::Parser;
 use std::fs::File;
 use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
-
-use clap::Parser;
-
-use crate::application::process_transactions::{AppError, run as process_transactions};
 
 #[derive(Parser)]
 #[command(
@@ -39,8 +40,18 @@ pub fn run() -> ExitCode {
     }
 }
 
+fn is_broken_pipe(error: &AppError) -> bool {
+    match error {
+        AppError::Io(error) => error.kind() == io::ErrorKind::BrokenPipe,
+        AppError::Csv(error) => matches!(
+            error.kind(),
+            csv::ErrorKind::Io(io_error) if io_error.kind() == io::ErrorKind::BrokenPipe
+        ),
+    }
+}
+
 fn exit_code_from_error(error: &AppError) -> ExitCode {
-    if error.is_broken_pipe() { ExitCode::SUCCESS } else { ExitCode::from(1) }
+    if is_broken_pipe(error) { ExitCode::SUCCESS } else { ExitCode::from(1) }
 }
 
 fn execute(input_path: &PathBuf) -> Result<(), AppError> {
@@ -49,7 +60,9 @@ fn execute(input_path: &PathBuf) -> Result<(), AppError> {
     // record write inside csv::Writer.
     let stdout = io::stdout();
     let output = stdout.lock();
-    process_transactions(input, output)
+    let mut source = CsvTransactionReader::new(input)?;
+    let mut sink = CsvAccountWriter::new(output);
+    process_transactions(&mut source, &mut sink)
 }
 
 #[cfg(test)]
@@ -60,6 +73,14 @@ mod tests {
     #[test]
     fn broken_pipe_maps_to_success_exit_code() {
         let error = AppError::Io(Error::new(ErrorKind::BrokenPipe, "broken pipe"));
+
+        assert_eq!(exit_code_from_error(&error), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn csv_wrapped_broken_pipe_maps_to_success_exit_code() {
+        let io_error = Error::new(ErrorKind::BrokenPipe, "broken pipe");
+        let error = AppError::Csv(csv::Error::from(io_error));
 
         assert_eq!(exit_code_from_error(&error), ExitCode::SUCCESS);
     }

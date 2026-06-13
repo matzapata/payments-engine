@@ -1,6 +1,6 @@
 use crate::domain::ledger::Ledger;
-use crate::infrastructure::csv::{CsvAccountWriter, CsvTransactionReader};
-use std::io::{ErrorKind, Read, Write};
+use crate::infrastructure::accounts::AccountSink;
+use crate::infrastructure::transactions::TransactionSource;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -11,74 +11,89 @@ pub enum AppError {
     Csv(#[from] csv::Error),
 }
 
-impl AppError {
-    pub fn is_broken_pipe(&self) -> bool {
-        match self {
-            Self::Io(error) => error.kind() == ErrorKind::BrokenPipe,
-            Self::Csv(error) => matches!(
-                error.kind(),
-                csv::ErrorKind::Io(io_error) if io_error.kind() == ErrorKind::BrokenPipe
-            ),
-        }
-    }
-}
-
-pub fn run<R: Read, W: Write>(input: R, output: W) -> Result<(), AppError> {
+pub fn run<S, A>(source: &mut S, sink: &mut A) -> Result<(), AppError>
+where
+    S: TransactionSource,
+    S::Error: Into<AppError>,
+    A: AccountSink,
+    A::Error: Into<AppError>,
+{
     let mut ledger = Ledger::new();
-    let mut reader = CsvTransactionReader::new(input)?;
-
-    for transaction in reader.transactions() {
-        let transaction = transaction?;
-        ledger.apply(&transaction);
+    while let Some(result) = source.next_transaction() {
+        ledger.apply(&result.map_err(Into::into)?);
     }
-
-    CsvAccountWriter::new(output).write_accounts(ledger.accounts().copied())?;
+    sink.write_accounts(ledger.accounts().copied()).map_err(Into::into)?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::account::Account;
+    use crate::domain::transaction::{Amount, Transaction, TransactionKind};
 
-    struct BrokenPipeWriter;
+    struct VecSource {
+        transactions: std::vec::IntoIter<Transaction>,
+    }
 
-    impl Write for BrokenPipeWriter {
-        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
-            Err(std::io::Error::new(ErrorKind::BrokenPipe, "broken pipe"))
+    impl VecSource {
+        fn new(transactions: Vec<Transaction>) -> Self {
+            Self { transactions: transactions.into_iter() }
         }
+    }
 
-        fn flush(&mut self) -> std::io::Result<()> {
-            Err(std::io::Error::new(ErrorKind::BrokenPipe, "broken pipe"))
+    impl TransactionSource for VecSource {
+        type Error = AppError;
+
+        fn next_transaction(&mut self) -> Option<Result<Transaction, Self::Error>> {
+            self.transactions.next().map(Ok)
         }
     }
 
-    #[test]
-    fn broken_pipe_on_output_write_is_recognized() {
-        let input = b"type,client,tx,amount\ndeposit,1,1,1.0\n";
-        let error = run(input.as_slice(), BrokenPipeWriter).expect_err("broken pipe fails write");
+    struct VecSink {
+        accounts: Vec<Account>,
+    }
 
-        assert!(error.is_broken_pipe());
+    impl VecSink {
+        fn new() -> Self {
+            Self { accounts: Vec::new() }
+        }
+    }
+
+    impl AccountSink for VecSink {
+        type Error = AppError;
+
+        fn write_accounts(
+            &mut self,
+            accounts: impl IntoIterator<Item = Account>,
+        ) -> Result<(), Self::Error> {
+            self.accounts.extend(accounts);
+            Ok(())
+        }
+    }
+
+    fn tx(kind: TransactionKind, client: u16, tx: u32, amount: Option<Amount>) -> Transaction {
+        Transaction { kind, client, tx, amount }
     }
 
     #[test]
-    fn non_broken_pipe_io_error_is_not_recognized() {
-        let error = AppError::Io(std::io::Error::other("other"));
+    fn run_processes_transactions_via_ports() {
+        let mut source = VecSource::new(vec![
+            tx(TransactionKind::Deposit, 1, 1, Some(Amount::from_scaled(10_0000))),
+            tx(TransactionKind::Withdrawal, 1, 2, Some(Amount::from_scaled(3_5000))),
+            tx(TransactionKind::Dispute, 2, 10, None),
+        ]);
+        let mut sink = VecSink::new();
 
-        assert!(!error.is_broken_pipe());
-    }
+        run(&mut source, &mut sink).expect("run succeeds");
 
-    #[test]
-    fn run_processes_in_memory_csv() {
-        let input = b"type,client,tx,amount\n\
-                      deposit,1,1,10.0000\n\
-                      withdrawal,1,2,3.5000\n\
-                      dispute,2,10,\n";
-        let mut output = Vec::new();
-
-        run(input.as_slice(), &mut output).expect("run succeeds");
-
-        let expected = "client,available,held,total,locked\n\
-                        1,6.5000,0.0000,6.5000,false\n";
-        assert_eq!(std::str::from_utf8(&output).unwrap(), expected);
+        let account = sink
+            .accounts
+            .iter()
+            .find(|account| account.client == 1)
+            .expect("client 1 account exists");
+        assert_eq!(account.available, Amount::from_scaled(6_5000));
+        assert_eq!(account.held, Amount::ZERO);
+        assert!(!account.locked);
     }
 }

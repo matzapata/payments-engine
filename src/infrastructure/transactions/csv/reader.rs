@@ -1,5 +1,6 @@
 use crate::domain::transaction::Transaction;
 use crate::domain::transaction::TransactionKind;
+use crate::infrastructure::transactions::TransactionSource;
 use csv::StringRecord;
 use serde::Deserialize;
 use std::io::Read;
@@ -15,32 +16,21 @@ impl<R: Read> CsvTransactionReader<R> {
         let headers = reader.headers()?.clone();
         Ok(Self { reader, headers })
     }
-
-    pub fn transactions(&mut self) -> Transactions<'_, R> {
-        Transactions { records: self.reader.records(), headers: &self.headers }
-    }
 }
 
-pub struct Transactions<'a, R> {
-    records: csv::StringRecordsIter<'a, R>,
-    headers: &'a StringRecord,
-}
+impl<R: Read> TransactionSource for CsvTransactionReader<R> {
+    type Error = csv::Error;
 
-impl<R: Read> Iterator for Transactions<'_, R> {
-    /// IO errors are surfaced so the caller can fail-fast on a bad input stream
-    /// (per the CLI's exit-code policy). Structural CSV errors (uneven columns,
-    /// invalid UTF-8, ...) and rows that fail semantic validation are silently
-    /// skipped so a single bad line never truncates the rest of the file.
-    type Item = Result<Transaction, csv::Error>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    fn next_transaction(&mut self) -> Option<Result<Transaction, Self::Error>> {
+        let mut record = StringRecord::new();
         loop {
-            match self.records.next()? {
-                Ok(record) => {
-                    if let Some(transaction) = parse_transaction_row(self.headers, &record) {
+            match self.reader.read_record(&mut record) {
+                Ok(true) => {
+                    if let Some(transaction) = parse_transaction_row(&self.headers, &record) {
                         return Some(Ok(transaction));
                     }
                 }
+                Ok(false) => return None,
                 Err(error) if matches!(error.kind(), csv::ErrorKind::Io(_)) => {
                     return Some(Err(error));
                 }
@@ -88,6 +78,14 @@ mod tests {
     use super::*;
     use crate::domain::Amount;
 
+    fn collect_transactions<R: Read>(reader: &mut CsvTransactionReader<R>) -> Vec<Transaction> {
+        let mut transactions = Vec::new();
+        while let Some(result) = reader.next_transaction() {
+            transactions.push(result.expect("in-memory test fixture cannot raise IO errors"));
+        }
+        transactions
+    }
+
     fn parse_row(line: &str) -> Option<Transaction> {
         let mut reader =
             csv::ReaderBuilder::new().trim(csv::Trim::All).from_reader(line.as_bytes());
@@ -98,10 +96,7 @@ mod tests {
 
     fn parse_csv(input: &str) -> Vec<Transaction> {
         let mut reader = CsvTransactionReader::new(input.as_bytes()).expect("valid csv");
-        reader
-            .transactions()
-            .map(|result| result.expect("in-memory test fixture cannot raise IO errors"))
-            .collect()
+        collect_transactions(&mut reader)
     }
 
     #[test]

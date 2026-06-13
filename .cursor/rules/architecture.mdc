@@ -11,27 +11,33 @@ src/
   main.rs              # thin entrypoint
   lib.rs               # module root and public re-exports
   presentation/        # cli.rs — argv, file open, exit codes
-  application/         # process_transactions.rs — read → apply → write
+  application/         # process_transactions.rs — AppError, run(source, sink)
   domain/              # transaction, account, ledger — all business rules
-  infrastructure/      # csv.rs — serde row types, parse/write helpers
+  infrastructure/
+    transactions/      # TransactionSource port; csv/ — CsvTransactionReader
+    accounts/          # AccountSink port; csv/ — CsvAccountWriter
 ```
 
 ## Dependency rule
 
-`presentation → application → domain ← infrastructure`
+```
+presentation → application → domain
+presentation → infrastructure → domain
+application → infrastructure   (trait bounds in run only)
+```
 
 - **Domain** depends on nothing external (no `std::io`, no `serde`, no `csv`)
-- **Application** orchestrates streaming via `Read` / `Write`; signature: `run<R: Read, W: Write>(input: R, output: W) -> Result<(), AppError>`
-- **Infrastructure** owns CSV parsing/serialization; depends only on domain types
-- **Presentation** wires CLI to application and infrastructure
+- **Application** orchestrates `run(source, sink)`; depends on domain and infrastructure port traits
+- **Infrastructure** defines ports in `transactions/mod.rs` and `accounts/mod.rs`; CSV adapters impl them under `csv/`
+- **Presentation** wires CLI to application and constructs infrastructure adapters
 
 ## Data flow
 
 1. CLI parses `argv[1]` as input path
-2. `CsvTransactionReader` streams `Transaction` rows
-3. `ProcessTransactions` applies each row to `Ledger`
+2. `CsvTransactionReader` streams parsed `Transaction` rows via `TransactionSource`
+3. `run` applies each row to `Ledger`
 4. On EOF, `Ledger` produces account snapshots
-5. `CsvAccountWriter` serializes to stdout
+5. `CsvAccountWriter` serializes snapshots to stdout via `AccountSink`
 
 ## Anti-patterns
 
@@ -39,6 +45,9 @@ src/
 // ❌ Domain importing I/O or serde
 use csv::Reader;
 use serde::Deserialize;
+
+// ❌ Application importing concrete CSV adapters
+use crate::infrastructure::transactions::CsvTransactionReader;
 
 // ❌ Business rules in presentation or infrastructure
 fn parse_and_apply_deposit(row: &str) { /* balance logic here */ }
