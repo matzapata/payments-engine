@@ -125,8 +125,7 @@ Deposit → Dispute → Resolve   (funds released back to available)
 | Situation | Behavior |
 | --------- | -------- |
 | CLI usage errors (missing or extra arguments) | Print usage to **stderr**, exit code **2** |
-| I/O errors opening or reading the input file | Message to **stderr**, exit code **1** |
-| Output write errors (broken pipe on stdout) | Exit **0** on `EPIPE`; exit **1** on other write errors |
+| I/O errors (input read, output write) | Message to **stderr**, exit code **1** |
 | Malformed CSV rows (bad header, unparseable amount, unknown `type`, missing required fields) | Silently skipped; processing continues |
 | Partner errors (unknown `tx`, wrong lifecycle state, client mismatch, locked account) | Silently ignored — see [Assumptions](#assumptions) |
 
