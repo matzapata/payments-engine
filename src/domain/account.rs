@@ -13,11 +13,17 @@ impl Account {
         Self { client, available: Amount::ZERO, held: Amount::ZERO, locked: false }
     }
 
-    pub fn total(&self) -> Amount {
-        self.available + self.held
+    /// Returns `available + held`, or `None` if the sum would overflow `Amount`.
+    ///
+    /// The ledger's `apply_*` paths use `checked_add` / `checked_sub` so a `None` here
+    /// represents a violated invariant (or test data outside the supported range), not
+    /// a transient state — callers can safely panic or surface a hard error.
+    pub fn total(&self) -> Option<Amount> {
+        self.available.checked_add(self.held)
     }
 
     pub(crate) fn assert_invariant(&self) {
         debug_assert!(self.held >= Amount::ZERO);
+        debug_assert!(self.total().is_some(), "available + held overflows Amount");
     }
 }

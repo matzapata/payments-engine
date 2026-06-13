@@ -66,11 +66,16 @@ impl FromStr for Amount {
             return Err(ParseAmountError);
         }
 
-        let negative = trimmed.starts_with('-');
-        let digits = trimmed.trim_start_matches('-');
-        let (whole, fraction) = match digits.split_once('.') {
+        // Negative amounts are rejected at the parsing boundary: deposits and withdrawals
+        // must be non-negative, and partner rows (dispute/resolve/chargeback) take their
+        // amount from the original stored deposit, not from the row.
+        if trimmed.starts_with('-') {
+            return Err(ParseAmountError);
+        }
+
+        let (whole, fraction) = match trimmed.split_once('.') {
             Some((whole, fraction)) => (whole, fraction),
-            None => (digits, ""),
+            None => (trimmed, ""),
         };
 
         if whole.is_empty() || fraction.len() > 4 || !whole.chars().all(|c| c.is_ascii_digit()) {
@@ -83,13 +88,10 @@ impl FromStr for Amount {
         let whole_part: i64 = whole.parse().map_err(|_| ParseAmountError)?;
         let fraction_part =
             format!("{fraction:0<4}")[..4].parse::<i64>().map_err(|_| ParseAmountError)?;
-        let abs_scaled = whole_part
+        let scaled = whole_part
             .checked_mul(10_000)
             .and_then(|value| value.checked_add(fraction_part))
             .ok_or(ParseAmountError)?;
-
-        let scaled =
-            if negative { abs_scaled.checked_neg().ok_or(ParseAmountError)? } else { abs_scaled };
 
         Ok(Self(scaled))
     }

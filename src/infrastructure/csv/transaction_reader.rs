@@ -124,6 +124,8 @@ mod tests {
             "type,client,tx,amount\ndeposit,1,1,",
             "type,client,tx,amount\ndeposit,1,1,abc",
             "type,client,tx,amount\ndeposit,1,1,1.12345",
+            "type,client,tx,amount\ndeposit,1,1,-1.0",
+            "type,client,tx,amount\ndeposit,1,1,-0.0001",
         ] {
             assert!(parse_row(line).is_none(), "expected skip for {line}");
         }
@@ -135,6 +137,8 @@ mod tests {
             "type,client,tx,amount\nwithdrawal,1,2,",
             "type,client,tx,amount\nwithdrawal,1,2,abc",
             "type,client,tx,amount\nwithdrawal,1,2,1.12345",
+            "type,client,tx,amount\nwithdrawal,1,2,-1.0",
+            "type,client,tx,amount\nwithdrawal,1,2,-0.0001",
         ] {
             assert!(parse_row(line).is_none(), "expected skip for {line}");
         }
@@ -179,9 +183,13 @@ mod tests {
     }
 
     #[test]
-    fn amount_parsing_supports_negatives() {
-        assert_eq!("-1.2345".parse::<Amount>().ok(), Some(Amount::from_scaled(-12_345)));
-        assert_eq!("-0.0001".parse::<Amount>().ok(), Some(Amount::from_scaled(-1)));
+    fn amount_parsing_rejects_negatives() {
+        // Negative monetary amounts are nonsensical for deposits/withdrawals and would
+        // corrupt the dispute lifecycle if stored. Rejecting at the parser keeps the
+        // domain layer free of sign checks.
+        assert!("-1.2345".parse::<Amount>().is_err());
+        assert!("-0.0001".parse::<Amount>().is_err());
+        assert!("-0".parse::<Amount>().is_err());
     }
 
     #[test]

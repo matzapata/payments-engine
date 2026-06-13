@@ -45,7 +45,10 @@ fn exit_code_from_error(error: &AppError) -> ExitCode {
 
 fn execute(input_path: &PathBuf) -> Result<(), AppError> {
     let input = File::open(input_path).map_err(AppError::Io)?;
-    let output = io::stdout();
+    // Acquire the stdout lock once for the whole run instead of re-locking on every
+    // record write inside csv::Writer.
+    let stdout = io::stdout();
+    let output = stdout.lock();
     process_transactions(input, output)
 }
 

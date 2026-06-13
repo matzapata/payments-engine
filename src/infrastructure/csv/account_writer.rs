@@ -21,11 +21,14 @@ impl<W: Write> CsvAccountWriter<W> {
         rows.sort_by_key(|account| account.client);
 
         for account in rows {
+            let total = account
+                .total()
+                .expect("ledger invariant violated: available + held overflows Amount");
             writer.write_record([
                 account.client.to_string(),
                 account.available.to_string(),
                 account.held.to_string(),
-                account.total().to_string(),
+                total.to_string(),
                 account.locked.to_string(),
             ])?;
         }

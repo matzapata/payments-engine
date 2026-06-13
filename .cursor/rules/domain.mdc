@@ -31,7 +31,7 @@ Dispute/resolve/chargeback amounts come from the **original transaction** refere
 
 `None → Disputed → Resolved | ChargedBack`
 
-- Only `deposit` and `withdrawal` can be disputed
+- Only `deposit` rows can be disputed (only deposits are stored in the tx map for lookup; disputing a withdrawal is silently ignored)
 - `client` on dispute row must match original transaction
 - Repeated invalid dispute/resolve/chargeback on same `tx` → **ignored**
 - Locked account → all subsequent transactions for that client **ignored**

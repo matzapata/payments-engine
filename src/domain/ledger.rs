@@ -227,15 +227,16 @@ mod tests {
     }
 
     fn assert_invariant(account: &Account, context: &str) {
-        assert_eq!(
-            account.available + account.held,
-            account.total(),
-            "{context}: invariant violated for client {}",
-            account.client
-        );
         assert!(
             account.held >= Amount::ZERO,
             "{context}: negative held for client {}",
+            account.client
+        );
+        assert!(
+            account.total().is_some(),
+            "{context}: available ({:?}) + held ({:?}) overflows Amount for client {}",
+            account.available,
+            account.held,
             account.client
         );
     }
@@ -260,7 +261,11 @@ mod tests {
             assert_eq!(account.available, expect.available, "{case_name}: available");
             assert_eq!(account.held, expect.held, "{case_name}: held");
             assert_eq!(account.locked, expect.locked, "{case_name}: locked");
-            assert_eq!(account.total(), expect.available + expect.held, "{case_name}: total");
+            let expected_total = expect
+                .available
+                .checked_add(expect.held)
+                .unwrap_or_else(|| panic!("{case_name}: expected total overflows Amount"));
+            assert_eq!(account.total(), Some(expected_total), "{case_name}: total");
         }
     }
 
@@ -533,6 +538,20 @@ mod tests {
         let ledger =
             apply_all_checked(&[tx(Deposit, 1, 1, None)], "deposit without amount is ignored");
         assert!(ledger.accounts().next().is_none(), "deposit without amount is ignored");
+    }
+
+    #[test]
+    fn total_returns_none_on_overflow() {
+        // Construct an Account directly to verify total() guards overflow without panicking.
+        // The apply layer's checked arithmetic makes this state unreachable in practice,
+        // but Account::total() is the last line of defense for output.
+        let account = Account {
+            client: 1,
+            available: Amount::from_scaled(i64::MAX),
+            held: Amount::from_scaled(1),
+            locked: false,
+        };
+        assert_eq!(account.total(), None);
     }
 
     #[test]
