@@ -60,20 +60,20 @@ impl Ledger {
             return;
         };
 
-        {
-            let account = self.account_mut(transaction.client);
-            account.available = match account.available.checked_add(amount) {
-                Some(available) => available,
-                None => return,
-            };
-        }
+        let account = self.account_mut(transaction.client);
+        let Some(new_available) = account.available.checked_add(amount) else {
+            return;
+        };
+        account.available = new_available;
+        account.assert_invariant();
 
+        // Account state is fully committed before we record the deposit; the insert below
+        // touches a different field of `self` so the prior &mut Account borrow has already
+        // ended at the last use above.
         self.transactions.insert(
             transaction.tx,
             PostedDeposit { client: transaction.client, amount, dispute_state: DisputeState::None },
         );
-
-        self.accounts.get_mut(&transaction.client).expect("account exists").assert_invariant();
     }
 
     fn apply_withdrawal(&mut self, transaction: &Transaction) {
@@ -85,21 +85,17 @@ impl Ledger {
         if account.available < amount {
             return;
         }
-
-        account.available = match account.available.checked_sub(amount) {
-            Some(available) => available,
-            None => return,
+        let Some(new_available) = account.available.checked_sub(amount) else {
+            return;
         };
-
+        account.available = new_available;
         account.assert_invariant();
     }
 
     fn apply_dispute(&mut self, transaction: &Transaction) {
-        let stored = match self.transactions.get(&transaction.tx) {
-            Some(stored) => *stored,
-            None => return,
+        let Some(stored) = self.transactions.get(&transaction.tx).copied() else {
+            return;
         };
-
         if stored.client != transaction.client {
             return;
         }
@@ -107,32 +103,29 @@ impl Ledger {
             return;
         }
 
-        let amount = stored.amount;
-        let client = transaction.client;
+        let account = self.account_mut(transaction.client);
+        let Some(new_available) = account.available.checked_sub(stored.amount) else {
+            return;
+        };
+        let Some(new_held) = account.held.checked_add(stored.amount) else {
+            return;
+        };
+        account.available = new_available;
+        account.held = new_held;
+        account.assert_invariant();
 
-        {
-            let account = self.account_mut(client);
-            let (new_available, new_held) =
-                match (account.available.checked_sub(amount), account.held.checked_add(amount)) {
-                    (Some(available), Some(held)) => (available, held),
-                    _ => return,
-                };
-            account.available = new_available;
-            account.held = new_held;
-        }
-
-        self.transactions.get_mut(&transaction.tx).expect("tx exists").dispute_state =
-            DisputeState::Disputed;
-
-        self.accounts.get_mut(&client).expect("account exists").assert_invariant();
+        // Safe: the entry exists (we just `.copied()` it above) and no code in between
+        // mutates `self.transactions`.
+        self.transactions
+            .get_mut(&transaction.tx)
+            .expect("tx still present after balance update")
+            .dispute_state = DisputeState::Disputed;
     }
 
     fn apply_resolve(&mut self, transaction: &Transaction) {
-        let stored = match self.transactions.get(&transaction.tx) {
-            Some(stored) => *stored,
-            None => return,
+        let Some(stored) = self.transactions.get(&transaction.tx).copied() else {
+            return;
         };
-
         if stored.client != transaction.client {
             return;
         }
@@ -140,32 +133,27 @@ impl Ledger {
             return;
         }
 
-        let amount = stored.amount;
-        let client = stored.client;
+        let account = self.account_mut(stored.client);
+        let Some(new_held) = account.held.checked_sub(stored.amount) else {
+            return;
+        };
+        let Some(new_available) = account.available.checked_add(stored.amount) else {
+            return;
+        };
+        account.held = new_held;
+        account.available = new_available;
+        account.assert_invariant();
 
-        {
-            let account = self.account_mut(client);
-            let (new_held, new_available) =
-                match (account.held.checked_sub(amount), account.available.checked_add(amount)) {
-                    (Some(held), Some(available)) => (held, available),
-                    _ => return,
-                };
-            account.held = new_held;
-            account.available = new_available;
-        }
-
-        self.transactions.get_mut(&transaction.tx).expect("tx exists").dispute_state =
-            DisputeState::Resolved;
-
-        self.accounts.get_mut(&client).expect("account exists").assert_invariant();
+        self.transactions
+            .get_mut(&transaction.tx)
+            .expect("tx still present after balance update")
+            .dispute_state = DisputeState::Resolved;
     }
 
     fn apply_chargeback(&mut self, transaction: &Transaction) {
-        let stored = match self.transactions.get(&transaction.tx) {
-            Some(stored) => *stored,
-            None => return,
+        let Some(stored) = self.transactions.get(&transaction.tx).copied() else {
+            return;
         };
-
         if stored.client != transaction.client {
             return;
         }
@@ -173,22 +161,18 @@ impl Ledger {
             return;
         }
 
-        let amount = stored.amount;
-        let client = stored.client;
+        let account = self.account_mut(stored.client);
+        let Some(new_held) = account.held.checked_sub(stored.amount) else {
+            return;
+        };
+        account.held = new_held;
+        account.locked = true;
+        account.assert_invariant();
 
-        {
-            let account = self.account_mut(client);
-            account.held = match account.held.checked_sub(amount) {
-                Some(held) => held,
-                None => return,
-            };
-            account.locked = true;
-        }
-
-        self.transactions.get_mut(&transaction.tx).expect("tx exists").dispute_state =
-            DisputeState::ChargedBack;
-
-        self.accounts.get_mut(&client).expect("account exists").assert_invariant();
+        self.transactions
+            .get_mut(&transaction.tx)
+            .expect("tx still present after balance update")
+            .dispute_state = DisputeState::ChargedBack;
     }
 }
 

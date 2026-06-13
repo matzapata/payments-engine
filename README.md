@@ -59,7 +59,12 @@ Output formatting is flexible: spacing, integer vs decimal display, and row orde
 
 ### Processing Model
 
-Transactions are processed **incrementally** (row-by-row streaming). The full input file is never loaded into memory. State is maintained in bounded in-memory maps keyed by client and transaction ID.
+Transactions are processed **incrementally** (row-by-row streaming). The full input file is never loaded into memory. Working state lives in two in-memory maps:
+
+- `accounts: HashMap<u16, Account>` — bounded by `u16` (≤ 65 536 entries).
+- `transactions: HashMap<u32, PostedDeposit>` — one entry per **deposit** seen so far. This grows linearly with deposit volume, which is intrinsic to the spec (any later row can dispute any earlier deposit by `tx`). Withdrawals, disputes, resolves, and chargebacks are **not** stored.
+
+A single row never causes more than O(1) extra allocation, and a malformed row is skipped without aborting the stream — see [Error Handling](#error-handling).
 
 ## Design Principles
 

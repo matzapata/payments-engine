@@ -28,6 +28,7 @@ pub fn run<R: Read, W: Write>(input: R, output: W) -> Result<(), AppError> {
     let mut reader = CsvTransactionReader::new(input)?;
 
     for transaction in reader.transactions() {
+        let transaction = transaction?;
         ledger.apply(&transaction);
     }
 

@@ -27,14 +27,24 @@ pub struct Transactions<'a, R> {
 }
 
 impl<R: Read> Iterator for Transactions<'_, R> {
-    type Item = Transaction;
+    /// IO errors are surfaced so the caller can fail-fast on a bad input stream
+    /// (per the CLI's exit-code policy). Structural CSV errors (uneven columns,
+    /// invalid UTF-8, ...) and rows that fail semantic validation are silently
+    /// skipped so a single bad line never truncates the rest of the file.
+    type Item = Result<Transaction, csv::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            let record = self.records.next()?;
-            let record = record.ok()?;
-            if let Some(transaction) = parse_transaction_row(self.headers, &record) {
-                return Some(transaction);
+            match self.records.next()? {
+                Ok(record) => {
+                    if let Some(transaction) = parse_transaction_row(self.headers, &record) {
+                        return Some(Ok(transaction));
+                    }
+                }
+                Err(error) if matches!(error.kind(), csv::ErrorKind::Io(_)) => {
+                    return Some(Err(error));
+                }
+                Err(_) => continue,
             }
         }
     }
@@ -88,7 +98,10 @@ mod tests {
 
     fn parse_csv(input: &str) -> Vec<Transaction> {
         let mut reader = CsvTransactionReader::new(input.as_bytes()).expect("valid csv");
-        reader.transactions().collect()
+        reader
+            .transactions()
+            .map(|result| result.expect("in-memory test fixture cannot raise IO errors"))
+            .collect()
     }
 
     #[test]
@@ -215,5 +228,46 @@ mod tests {
     #[test]
     fn amount_display_zero_pads_fraction() {
         assert_eq!(Amount::from_scaled(100_0000).to_string(), "100.0000");
+    }
+
+    #[test]
+    fn amount_round_trip_parse_then_display() {
+        // Display must produce a string that FromStr accepts back to the same scaled value.
+        for raw in ["0", "0.0", "0.0001", "1", "1.5", "100.0000", "12.3450"] {
+            let parsed = raw.parse::<Amount>().expect("parses");
+            let rendered = parsed.to_string();
+            let reparsed = rendered.parse::<Amount>().expect("re-parses");
+            assert_eq!(parsed, reparsed, "round-trip mismatch for {raw}");
+        }
+    }
+
+    #[test]
+    fn malformed_row_does_not_truncate_stream() {
+        // Regression: a row with the wrong column count produces csv::ErrorKind::UnequalLengths,
+        // and the previous iterator implementation propagated `Some(Err(_))` through `?` as `None`
+        // — silently dropping every row after the bad one. The fixed iterator must skip the bad
+        // row and keep streaming.
+        let csv = "type,client,tx,amount\n\
+                   deposit,1,1,10.0000\n\
+                   deposit,1,2\n\
+                   deposit,1,3,5.0000\n";
+        let transactions = parse_csv(csv);
+        assert_eq!(transactions.len(), 2, "second deposit must reach the ledger");
+        assert_eq!(transactions[0].tx, 1);
+        assert_eq!(transactions[1].tx, 3);
+    }
+
+    #[test]
+    fn header_column_order_is_flexible() {
+        // Spec calls out columns by name. Serde with header-driven deserialization should
+        // accept any order; this test pins that behavior so a future refactor can't silently
+        // regress it.
+        let csv = "amount,tx,client,type\n10.0000,7,42,deposit\n";
+        let transactions = parse_csv(csv);
+        assert_eq!(transactions.len(), 1);
+        assert_eq!(transactions[0].kind, TransactionKind::Deposit);
+        assert_eq!(transactions[0].client, 42);
+        assert_eq!(transactions[0].tx, 7);
+        assert_eq!(transactions[0].amount, Some(Amount::from_scaled(10_0000)));
     }
 }
