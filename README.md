@@ -1,5 +1,8 @@
 # Payments Engine
 
+[![CI](https://github.com/matzapata/payments-engine/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/matzapata/payments-engine/actions/workflows/ci.yml?query=branch%3Adevelop)
+![Rust](https://img.shields.io/badge/rust-stable-orange?logo=rust)
+
 A CSV-driven toy payments engine that processes client transactions, maintains account balances, handles dispute lifecycles, and emits a final account snapshot.
 
 ## Goal
