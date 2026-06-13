@@ -10,7 +10,7 @@ pub struct Account {
 
 impl Account {
     pub fn new(client: u16) -> Self {
-        Self { client, available: 0, held: 0, locked: false }
+        Self { client, available: Amount::ZERO, held: Amount::ZERO, locked: false }
     }
 
     pub fn total(&self) -> Amount {
@@ -18,6 +18,6 @@ impl Account {
     }
 
     pub(crate) fn assert_invariant(&self) {
-        debug_assert!(self.held >= 0);
+        debug_assert!(self.held >= Amount::ZERO);
     }
 }

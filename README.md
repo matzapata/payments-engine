@@ -200,12 +200,12 @@ src/
 
 **Domain:**
 
-- `Amount` — fixed-point `i64` scaled ×10⁴ (kept as a simple alias/helper instead of a dedicated `Money` module because the problem only needs add/sub/compare while still avoiding floating-point rounding)
+- `Amount` — fixed-point newtype over scaled `i64` (×10⁴); `FromStr` / `Display` for four-decimal strings; checked add/sub for balance updates
 - `TransactionKind` — `Deposit`, `Withdrawal`, `Dispute`, `Resolve`, `Chargeback`
 - `Account` — `available`, `held`, `locked`; invariant `total == available + held`
 - `DisputeState` — `None | Disputed | Resolved | ChargedBack`
-- `StoredTransaction` — internal ledger record containing `client`, `amount`, and `dispute_state`; only **deposit** rows are inserted into the tx map — `withdrawal`, `dispute`, `resolve`, and `chargeback` rows are not stored
-- `Ledger` — `HashMap<u16, Account>` + `HashMap<u32, StoredTransaction>`; `apply(&Transaction)`
+- `PostedDeposit` — ledger-internal record for a posted deposit: `client`, `amount`, `dispute_state`; only **deposit** rows are inserted into the tx map — `withdrawal`, `dispute`, `resolve`, and `chargeback` rows are not posted
+- `Ledger` — `HashMap<u16, Account>` + `HashMap<u32, PostedDeposit>`; `apply(&Transaction)`
 
 **Application:**
 

@@ -8,12 +8,12 @@ alwaysApply: false
 
 ## Key types
 
-- `Amount` — fixed-point `i64` scaled ×10⁴
+- `Amount` — fixed-point newtype over scaled `i64` (×10⁴); `FromStr` / `Display` for four-decimal strings
 - `TransactionKind` — `Deposit`, `Withdrawal`, `Dispute`, `Resolve`, `Chargeback`
 - `Account` — `available`, `held`, `locked`; invariant `total == available + held`
 - `DisputeState` — `None | Disputed | Resolved | ChargedBack`
-- `StoredTransaction` — `client`, `kind`, `amount`, `dispute_state`
-- `Ledger` — `HashMap<u16, Account>` + `HashMap<u32, StoredTransaction>`; `apply(&Transaction)`
+- `PostedDeposit` — ledger-internal posted deposit: `client`, `amount`, `dispute_state` (private to `ledger.rs`)
+- `Ledger` — `HashMap<u16, Account>` + `HashMap<u32, PostedDeposit>`; `apply(&Transaction)`
 
 ## Transaction semantics
 

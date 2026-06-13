@@ -1,9 +1,7 @@
-use std::io::{ErrorKind, Read, Write};
-
-use thiserror::Error;
-
 use crate::domain::ledger::Ledger;
 use crate::infrastructure::csv::{CsvAccountWriter, CsvTransactionReader};
+use std::io::{ErrorKind, Read, Write};
+use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum AppError {

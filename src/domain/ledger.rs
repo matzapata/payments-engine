@@ -1,13 +1,19 @@
 use std::collections::HashMap;
 
 use super::account::Account;
-use super::stored_transaction::StoredTransaction;
-use super::transaction::{DisputeState, Transaction, TransactionKind, checked_add, checked_sub};
+use super::transaction::{Amount, DisputeState, Transaction, TransactionKind};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PostedDeposit {
+    client: u16,
+    amount: Amount,
+    dispute_state: DisputeState,
+}
 
 #[derive(Debug, Default)]
 pub struct Ledger {
     accounts: HashMap<u16, Account>,
-    transactions: HashMap<u32, StoredTransaction>,
+    transactions: HashMap<u32, PostedDeposit>,
 }
 
 impl Ledger {
@@ -56,7 +62,7 @@ impl Ledger {
 
         {
             let account = self.account_mut(transaction.client);
-            account.available = match checked_add(account.available, amount) {
+            account.available = match account.available.checked_add(amount) {
                 Some(available) => available,
                 None => return,
             };
@@ -64,11 +70,7 @@ impl Ledger {
 
         self.transactions.insert(
             transaction.tx,
-            StoredTransaction {
-                client: transaction.client,
-                amount,
-                dispute_state: DisputeState::None,
-            },
+            PostedDeposit { client: transaction.client, amount, dispute_state: DisputeState::None },
         );
 
         self.accounts.get_mut(&transaction.client).expect("account exists").assert_invariant();
@@ -84,7 +86,7 @@ impl Ledger {
             return;
         }
 
-        account.available = match checked_sub(account.available, amount) {
+        account.available = match account.available.checked_sub(amount) {
             Some(available) => available,
             None => return,
         };
@@ -111,7 +113,7 @@ impl Ledger {
         {
             let account = self.account_mut(client);
             let (new_available, new_held) =
-                match (checked_sub(account.available, amount), checked_add(account.held, amount)) {
+                match (account.available.checked_sub(amount), account.held.checked_add(amount)) {
                     (Some(available), Some(held)) => (available, held),
                     _ => return,
                 };
@@ -144,7 +146,7 @@ impl Ledger {
         {
             let account = self.account_mut(client);
             let (new_held, new_available) =
-                match (checked_sub(account.held, amount), checked_add(account.available, amount)) {
+                match (account.held.checked_sub(amount), account.available.checked_add(amount)) {
                     (Some(held), Some(available)) => (held, available),
                     _ => return,
                 };
@@ -176,7 +178,7 @@ impl Ledger {
 
         {
             let account = self.account_mut(client);
-            account.held = match checked_sub(account.held, amount) {
+            account.held = match account.held.checked_sub(amount) {
                 Some(held) => held,
                 None => return,
             };
@@ -220,6 +222,10 @@ mod tests {
         Transaction { kind, client, tx, amount }
     }
 
+    fn amt(value: i64) -> Amount {
+        Amount::from_scaled(value)
+    }
+
     fn assert_invariant(account: &Account, context: &str) {
         assert_eq!(
             account.available + account.held,
@@ -227,7 +233,11 @@ mod tests {
             "{context}: invariant violated for client {}",
             account.client
         );
-        assert!(account.held >= 0, "{context}: negative held for client {}", account.client);
+        assert!(
+            account.held >= Amount::ZERO,
+            "{context}: negative held for client {}",
+            account.client
+        );
     }
 
     fn apply_all_checked(transactions: &[Transaction], context: &str) -> Ledger {
@@ -291,50 +301,65 @@ mod tests {
         run_ledger_cases(&[
             LedgerCase {
                 name: "deposit increases available and total",
-                transactions: vec![tx(Deposit, 1, 1, Some(10_0000))],
+                transactions: vec![tx(Deposit, 1, 1, Some(amt(10_0000)))],
                 expected: vec![AccountExpect {
                     client: 1,
-                    available: 10_0000,
-                    held: 0,
+                    available: amt(10_0000),
+                    held: Amount::ZERO,
                     locked: false,
                 }],
             },
             LedgerCase {
                 name: "withdrawal with sufficient funds decreases available and total",
                 transactions: vec![
-                    tx(Deposit, 1, 1, Some(10_0000)),
-                    tx(Withdrawal, 1, 2, Some(4_0000)),
+                    tx(Deposit, 1, 1, Some(amt(10_0000))),
+                    tx(Withdrawal, 1, 2, Some(amt(4_0000))),
                 ],
                 expected: vec![AccountExpect {
                     client: 1,
-                    available: 6_0000,
-                    held: 0,
+                    available: amt(6_0000),
+                    held: Amount::ZERO,
                     locked: false,
                 }],
             },
             LedgerCase {
                 name: "multiple clients have independent balances",
                 transactions: vec![
-                    tx(Deposit, 1, 1, Some(10_0000)),
-                    tx(Deposit, 2, 2, Some(20_0000)),
-                    tx(Withdrawal, 1, 3, Some(3_0000)),
+                    tx(Deposit, 1, 1, Some(amt(10_0000))),
+                    tx(Deposit, 2, 2, Some(amt(20_0000))),
+                    tx(Withdrawal, 1, 3, Some(amt(3_0000))),
                 ],
                 expected: vec![
-                    AccountExpect { client: 1, available: 7_0000, held: 0, locked: false },
-                    AccountExpect { client: 2, available: 20_0000, held: 0, locked: false },
+                    AccountExpect {
+                        client: 1,
+                        available: amt(7_0000),
+                        held: Amount::ZERO,
+                        locked: false,
+                    },
+                    AccountExpect {
+                        client: 2,
+                        available: amt(20_0000),
+                        held: Amount::ZERO,
+                        locked: false,
+                    },
                 ],
             },
             LedgerCase {
                 name: "client account is auto-created on first transaction",
-                transactions: vec![tx(Withdrawal, 42, 1, Some(1_0000))],
-                expected: vec![AccountExpect { client: 42, available: 0, held: 0, locked: false }],
+                transactions: vec![tx(Withdrawal, 42, 1, Some(amt(1_0000)))],
+                expected: vec![AccountExpect {
+                    client: 42,
+                    available: Amount::ZERO,
+                    held: Amount::ZERO,
+                    locked: false,
+                }],
             },
         ]);
 
         run_no_op_cases(&[NoOpCase {
             name: "withdrawal with insufficient funds is no-op",
-            setup: vec![tx(Deposit, 1, 1, Some(5_0000))],
-            extra: vec![tx(Withdrawal, 1, 2, Some(6_0000))],
+            setup: vec![tx(Deposit, 1, 1, Some(amt(5_0000)))],
+            extra: vec![tx(Withdrawal, 1, 2, Some(amt(6_0000)))],
             clients: vec![1],
         }]);
     }
@@ -344,48 +369,53 @@ mod tests {
         run_ledger_cases(&[
             LedgerCase {
                 name: "dispute moves funds from available to held",
-                transactions: vec![tx(Deposit, 1, 1, Some(10_0000)), tx(Dispute, 1, 1, None)],
+                transactions: vec![tx(Deposit, 1, 1, Some(amt(10_0000))), tx(Dispute, 1, 1, None)],
                 expected: vec![AccountExpect {
                     client: 1,
-                    available: 0,
-                    held: 10_0000,
+                    available: Amount::ZERO,
+                    held: amt(10_0000),
                     locked: false,
                 }],
             },
             LedgerCase {
                 name: "deposit dispute resolve restores original available",
                 transactions: vec![
-                    tx(Deposit, 1, 1, Some(10_0000)),
+                    tx(Deposit, 1, 1, Some(amt(10_0000))),
                     tx(Dispute, 1, 1, None),
                     tx(Resolve, 1, 1, None),
                 ],
                 expected: vec![AccountExpect {
                     client: 1,
-                    available: 10_0000,
-                    held: 0,
+                    available: amt(10_0000),
+                    held: Amount::ZERO,
                     locked: false,
                 }],
             },
             LedgerCase {
                 name: "deposit dispute chargeback removes funds and locks",
                 transactions: vec![
-                    tx(Deposit, 1, 1, Some(10_0000)),
+                    tx(Deposit, 1, 1, Some(amt(10_0000))),
                     tx(Dispute, 1, 1, None),
                     tx(Chargeback, 1, 1, None),
                 ],
-                expected: vec![AccountExpect { client: 1, available: 0, held: 0, locked: true }],
+                expected: vec![AccountExpect {
+                    client: 1,
+                    available: Amount::ZERO,
+                    held: Amount::ZERO,
+                    locked: true,
+                }],
             },
             LedgerCase {
                 name: "dispute after withdrawing proceeds allows negative available",
                 transactions: vec![
-                    tx(Deposit, 1, 1, Some(10_0000)),
-                    tx(Withdrawal, 1, 2, Some(10_0000)),
+                    tx(Deposit, 1, 1, Some(amt(10_0000))),
+                    tx(Withdrawal, 1, 2, Some(amt(10_0000))),
                     tx(Dispute, 1, 1, None),
                 ],
                 expected: vec![AccountExpect {
                     client: 1,
-                    available: -10_0000,
-                    held: 10_0000,
+                    available: amt(-10_0000),
+                    held: amt(10_0000),
                     locked: false,
                 }],
             },
@@ -397,56 +427,59 @@ mod tests {
         run_no_op_cases(&[
             NoOpCase {
                 name: "dispute on unknown tx is ignored",
-                setup: vec![tx(Deposit, 1, 1, Some(10_0000))],
+                setup: vec![tx(Deposit, 1, 1, Some(amt(10_0000)))],
                 extra: vec![tx(Dispute, 1, 99, None)],
                 clients: vec![1],
             },
             NoOpCase {
                 name: "dispute on withdrawal tx is ignored",
-                setup: vec![tx(Deposit, 1, 1, Some(10_0000)), tx(Withdrawal, 1, 2, Some(3_0000))],
+                setup: vec![
+                    tx(Deposit, 1, 1, Some(amt(10_0000))),
+                    tx(Withdrawal, 1, 2, Some(amt(3_0000))),
+                ],
                 extra: vec![tx(Dispute, 1, 2, None)],
                 clients: vec![1],
             },
             NoOpCase {
                 name: "resolve on non-disputed tx is ignored",
-                setup: vec![tx(Deposit, 1, 1, Some(10_0000))],
+                setup: vec![tx(Deposit, 1, 1, Some(amt(10_0000)))],
                 extra: vec![tx(Resolve, 1, 1, None)],
                 clients: vec![1],
             },
             NoOpCase {
                 name: "chargeback on non-disputed tx is ignored",
-                setup: vec![tx(Deposit, 1, 1, Some(10_0000))],
+                setup: vec![tx(Deposit, 1, 1, Some(amt(10_0000)))],
                 extra: vec![tx(Chargeback, 1, 1, None)],
                 clients: vec![1],
             },
             NoOpCase {
                 name: "second dispute on same tx is ignored",
-                setup: vec![tx(Deposit, 1, 1, Some(10_0000)), tx(Dispute, 1, 1, None)],
+                setup: vec![tx(Deposit, 1, 1, Some(amt(10_0000))), tx(Dispute, 1, 1, None)],
                 extra: vec![tx(Dispute, 1, 1, None)],
                 clients: vec![1],
             },
             NoOpCase {
                 name: "dispute with mismatched client is ignored",
-                setup: vec![tx(Deposit, 1, 1, Some(10_0000))],
+                setup: vec![tx(Deposit, 1, 1, Some(amt(10_0000)))],
                 extra: vec![tx(Dispute, 2, 1, None)],
                 clients: vec![1],
             },
             NoOpCase {
                 name: "resolve with mismatched client is ignored",
-                setup: vec![tx(Deposit, 1, 1, Some(10_0000)), tx(Dispute, 1, 1, None)],
+                setup: vec![tx(Deposit, 1, 1, Some(amt(10_0000))), tx(Dispute, 1, 1, None)],
                 extra: vec![tx(Resolve, 2, 1, None)],
                 clients: vec![1],
             },
             NoOpCase {
                 name: "chargeback with mismatched client is ignored",
-                setup: vec![tx(Deposit, 1, 1, Some(10_0000)), tx(Dispute, 1, 1, None)],
+                setup: vec![tx(Deposit, 1, 1, Some(amt(10_0000))), tx(Dispute, 1, 1, None)],
                 extra: vec![tx(Chargeback, 2, 1, None)],
                 clients: vec![1],
             },
             NoOpCase {
                 name: "resolve on already resolved tx is ignored",
                 setup: vec![
-                    tx(Deposit, 1, 1, Some(10_0000)),
+                    tx(Deposit, 1, 1, Some(amt(10_0000))),
                     tx(Dispute, 1, 1, None),
                     tx(Resolve, 1, 1, None),
                 ],
@@ -456,7 +489,7 @@ mod tests {
             NoOpCase {
                 name: "chargeback on already resolved tx is ignored",
                 setup: vec![
-                    tx(Deposit, 1, 1, Some(10_0000)),
+                    tx(Deposit, 1, 1, Some(amt(10_0000))),
                     tx(Dispute, 1, 1, None),
                     tx(Resolve, 1, 1, None),
                 ],
@@ -466,7 +499,7 @@ mod tests {
             NoOpCase {
                 name: "second chargeback on same tx is ignored",
                 setup: vec![
-                    tx(Deposit, 1, 1, Some(10_0000)),
+                    tx(Deposit, 1, 1, Some(amt(10_0000))),
                     tx(Dispute, 1, 1, None),
                     tx(Chargeback, 1, 1, None),
                 ],
@@ -475,20 +508,20 @@ mod tests {
             },
             NoOpCase {
                 name: "withdrawal without amount is ignored",
-                setup: vec![tx(Deposit, 1, 1, Some(5_0000))],
+                setup: vec![tx(Deposit, 1, 1, Some(amt(5_0000)))],
                 extra: vec![tx(Withdrawal, 1, 2, None)],
                 clients: vec![1],
             },
             NoOpCase {
                 name: "locked account ignores all subsequent transactions",
                 setup: vec![
-                    tx(Deposit, 1, 1, Some(10_0000)),
+                    tx(Deposit, 1, 1, Some(amt(10_0000))),
                     tx(Dispute, 1, 1, None),
                     tx(Chargeback, 1, 1, None),
                 ],
                 extra: vec![
-                    tx(Deposit, 1, 2, Some(5_0000)),
-                    tx(Withdrawal, 1, 3, Some(1_0000)),
+                    tx(Deposit, 1, 2, Some(amt(5_0000))),
+                    tx(Withdrawal, 1, 3, Some(amt(1_0000))),
                     tx(Dispute, 1, 1, None),
                     tx(Resolve, 1, 1, None),
                     tx(Chargeback, 1, 1, None),
@@ -505,15 +538,15 @@ mod tests {
     #[test]
     fn invariant_holds_after_every_apply() {
         let transactions = vec![
-            tx(Deposit, 1, 1, Some(10_0000)),
-            tx(Deposit, 2, 2, Some(5_0000)),
-            tx(Withdrawal, 1, 3, Some(3_0000)),
+            tx(Deposit, 1, 1, Some(amt(10_0000))),
+            tx(Deposit, 2, 2, Some(amt(5_0000))),
+            tx(Withdrawal, 1, 3, Some(amt(3_0000))),
             tx(Dispute, 1, 1, None),
             tx(Resolve, 1, 1, None),
-            tx(Deposit, 3, 4, Some(8_0000)),
+            tx(Deposit, 3, 4, Some(amt(8_0000))),
             tx(Dispute, 3, 4, None),
             tx(Chargeback, 3, 4, None),
-            tx(Deposit, 3, 5, Some(1_0000)),
+            tx(Deposit, 3, 5, Some(amt(1_0000))),
         ];
 
         let ledger = apply_all_checked(&transactions, "invariant composite stream");
@@ -521,9 +554,24 @@ mod tests {
         assert_accounts(
             &ledger,
             &[
-                AccountExpect { client: 1, available: 7_0000, held: 0, locked: false },
-                AccountExpect { client: 2, available: 5_0000, held: 0, locked: false },
-                AccountExpect { client: 3, available: 0, held: 0, locked: true },
+                AccountExpect {
+                    client: 1,
+                    available: amt(7_0000),
+                    held: Amount::ZERO,
+                    locked: false,
+                },
+                AccountExpect {
+                    client: 2,
+                    available: amt(5_0000),
+                    held: Amount::ZERO,
+                    locked: false,
+                },
+                AccountExpect {
+                    client: 3,
+                    available: Amount::ZERO,
+                    held: Amount::ZERO,
+                    locked: true,
+                },
             ],
             "invariant composite stream",
         );

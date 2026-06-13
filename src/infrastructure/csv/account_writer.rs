@@ -1,8 +1,5 @@
-use std::io::Write;
-
 use crate::domain::account::Account;
-
-use super::parse::format_amount;
+use std::io::Write;
 
 pub struct CsvAccountWriter<W> {
     output: W,
@@ -26,9 +23,9 @@ impl<W: Write> CsvAccountWriter<W> {
         for account in rows {
             writer.write_record([
                 account.client.to_string(),
-                format_amount(account.available),
-                format_amount(account.held),
-                format_amount(account.total()),
+                account.available.to_string(),
+                account.held.to_string(),
+                account.total().to_string(),
                 account.locked.to_string(),
             ])?;
         }
@@ -41,12 +38,18 @@ impl<W: Write> CsvAccountWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::Amount;
     use crate::domain::account::Account;
 
     #[test]
     fn writes_four_decimal_amounts() {
         let mut output = Vec::new();
-        let account = Account { client: 1, available: 10_000, held: 2345, locked: false };
+        let account = Account {
+            client: 1,
+            available: Amount::from_scaled(10_000),
+            held: Amount::from_scaled(2345),
+            locked: false,
+        };
 
         CsvAccountWriter::new(&mut output).write_accounts([account]).expect("write succeeds");
 
